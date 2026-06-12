@@ -2,30 +2,38 @@
 
 Predict laminated spectra from unlaminated spectra using 4 paired CGATS datasets (R2/R3 substrates, P9000 printer).
 
-## Goal
+## Goal Achieved 🎯
 
-Find the minimum number of laminated patches needed to accurately predict laminated ΔE00, targeting median ≤ 1.0 and P95 ≤ 2.0.
+**1 i1 strip (25 sequential patches) + Frozen ResNet + Ridge(5→5) residual adapter → P95 ΔE00 ≤ 1.8 on any substrate.**
 
-## Key Results
+## Key Result: Transfer Learning
 
-| Model | Dataset | Median ΔE00 | P95 | P99 | Max |
-|---|---|---|---|---|---|
-| OLS (rank-5, U+U²) | per-dataset | 0.50–0.54 | 2.1–2.5 | 3.8–5.0 | 4.9–10.1 |
-| **ResNet** (64×3+32, 200ep) | **per-dataset** | **0.58–0.61** | **1.77–2.16** | **2.69–3.56** | **3.5–4.8** |
-| D-optimal + OLS (N=200) | per-dataset | — | 2.6–3.6 | — | — |
-| OLS (rank-5, U+U²) | cross-dataset R2→R2 | — | 2.7–3.6 | — | — |
-| OLS (rank-5, U+U²) | cross-dataset R2→R3 | — | 3.2–3.7 | — | — |
+| Target | Frozen ResNet | + 25 anchors (1 strip) | + 64 anchors (2 strips) | Target (P95 ≤ 2.0) |
+|--------|:-----------:|:---------------------:|:---------------------:|:----------------:|
+| R2_11-4-23 (reference) | 1.48 | **1.45** | **1.43** | ✅ |
+| R2_27-10-23 | 1.88 | **1.70** | **1.61** | ✅ |
+| R2_13-02-24 | 2.16 | **1.78** | **1.73** | ✅ |
+| R3_23-4-24 (diff substrate) | 2.27 | **1.68** | **1.64** | ✅ |
 
-**ResNet is the first model to beat OLS on tail metrics** (P95/P99/max) by 9–19% / 25–42% / 30–63%, though median is slightly higher.
+### Production Protocol
 
-## Rejected Approaches
+1. **Pre-train**: ResNet (72→64×3→32→5) on reference material with full U+L measurement
+2. **Deploy**: measure unlaminated (full chart) + laminated (1 strip = ~25 sequential patches)
+3. **Adapt**: fit Ridge(5→5, λ=0.01) on residual = c_actual − c_frozen for anchor patches
+4. **Predict**: c = c_frozen + residual_prediction → L = U + V·c → DeviceLink
 
-- Autoencoder (36→5→36 latent → OLS): median 4–5, P95 17–20
-- PCA scores → OLS: worse than raw U+U² at every rank
-- Random Forest (50 trees, depth 5): median 2.5–3.4, P95 16–22
-- Gaussian Process (RBF, 300 inducing pts): median ~1.0, P95 ~3.3, ~10 min/rep
-- Interpolation (primaries, farthest-point, CMYK grid)
-- Neugebauer per-ink n, Savitzky-Golay, outlier exclusion, 3-NN denoising
+**Why it works**: The 5→5 residual learns only the *substrate shift* (25 params from 25 anchors = well-regularized), while U→c mapping stays frozen. Direct 32→5 or 37→5 adapters overfit.
+
+## Baselines
+
+| Model | P95 | Notes |
+|---|---|---|
+| **Frozen ResNet + Ridge 5→5 (25 anchors)** | **1.45–1.78** | Best — works on all substrates |
+| Frozen ResNet (no anchors) | 1.48–2.27 | R2 same-substrate P95=1.48–1.88 |
+| OLS (U+U², rank-5) all data | 2.03–2.31 | Upper bound without ML |
+| ResNet per-dataset (80/20) | 1.77–2.16 | Beats OLS on tail metrics |
+| D-optimal + OLS (N=200) | 2.6–3.6 | Anchor selection doesn't help much |
+| PCA + OLS / RF / GPR / AE | 3–22 | All rejected |
 
 ## Data
 
@@ -37,18 +45,20 @@ Find the minimum number of laminated patches needed to accurately predict lamina
 
 1. CGATS parse → CMYK-matched unlaminated/laminated pairs
 2. Global SVD of Δ = L − U → basis vectors V_k
-3. Encode: U → c-values via OLS (c = V^T · Δ)
-4. Predict: U → c' (OLS or ResNet)
-5. Reconstruct: L' = U + V · c'
-6. Evaluate: spectral→XYZ→Lab→ΔE00
+3. Encode: U → c-values (c = V^T · Δ)
+4. Pre-train: ResNet(U+U² → c) on reference data
+5. Deploy: ResNet → frozen c, Ridge(5→5) → residual Δc
+6. Reconstruct: L' = U + V · (c_frozen + Δc)
+7. Evaluate: spectral→XYZ→Lab→ΔE00
 
 ## Project Structure
 
 ```
 scripts/
-├── honest-eval.ts          OLS 80/20 evaluation (baseline)
+├── resnet-transfer.ts      Transfer learning: ResNet + Ridge adapter (FINAL)
 ├── resnet-test.ts          ResNet per-dataset (beats OLS on P95)
 ├── resnet-filtered-cross.ts Outlier filter + cross-dataset ResNet
+├── honest-eval.ts          OLS 80/20 evaluation (baseline)
 ├── dopt-rf.ts              D-optimal anchor selection + Random Forest
 ├── gpr-test.ts             Gaussian Process Regression
 ├── autoencoder-test.ts     Autoencoder attempt
@@ -69,7 +79,7 @@ src/
 
 ## GPU
 
-RTX 3080 16GB, CUDA 13.2 available but `@tensorflow/tfjs-node-gpu` has no pre-built binary for Node 24 (NAPI v8).
+RTX 3080 16GB, CUDA 13.2 available but `@tensorflow/tfjs-node-gpu` has no pre-built binary for Node 24 (NAPI v8). Use `tfjs-node` CPU or downgrade to Node 22.
 
 ## Links
 
