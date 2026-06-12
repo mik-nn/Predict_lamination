@@ -229,3 +229,56 @@ Planned (queued):
 - UI warning when S3 channel ≠ neutral and OBA mismatch is high.
 - Per-λ curve plot for C7 (D3 chart at user-chosen wavelengths).
 - Per-λ residual heatmap N×L for any predictor.
+
+---
+
+## 6. Lamination prediction (Predict_lamination repo)
+
+### 6.1 Problem
+
+Predict laminated spectra `L(λ)` from unlaminated `U(λ)` for the same CMYK patch. Four paired datasets (3× R2 substrate, 1× R3) from P9000 printer. Target: minimum number of laminated anchors for median ΔE00 ≤ 1.0, P95 ≤ 2.0.
+
+### 6.2 Best model: OLS rank-5 with U+U²
+
+- Encode Δ = L − U via global SVD (all 4 datasets pooled)
+- Rank-5 basis covers ~99% of variance
+- Features: `[U(λ), U(λ)²]` (72 dims) → predict 5 c-values → reconstruct L
+- Per-dataset 80/20 evaluation: median 0.50–0.54, P95 2.1–2.5
+
+### 6.3 ResNet beats OLS on tail metrics
+
+**Architecture**: 72 → 64(BN+ReLU+DO)×3 → 32(BN+ReLU+DO) → 5; Adam 1e-3, batch 64, 200 epochs.
+
+First model to outperform OLS on P95/P99/max (9–63% improvement), though median is 0.58–0.61 (slightly higher than OLS).
+
+| Metric | OLS | ResNet | Improvement |
+|---|---|---|---|
+| Median | 0.50–0.54 | 0.58–0.61 | −8–15% (worse) |
+| P95 | 2.1–2.5 | 1.77–2.16 | 9–19% better |
+| P99 | 3.8–5.0 | 2.69–3.56 | 25–42% better |
+| Max | 4.9–10.1 | 3.5–4.8 | 30–63% better |
+
+### 6.4 Rejected models
+
+| Approach | Median | P95 | Failure mode |
+|---|---|---|---|
+| Autoencoder (36→5→36 + OLS) | 4–5 | 17–20 | Latent doesn't preserve spectral info |
+| PCA scores → OLS | 0.8–1.0 | 3.0–3.7 | PCA decorrelates but doesn't help OLS |
+| Random Forest (50 trees, d=5) | 2.5–3.4 | 16–22 | Overfits / can't extrapolate |
+| Gaussian Process (RBF, 300 pts) | ~1.0 | ~3.3 | ~10 min/rep, worse than OLS |
+| Neugebauer / Yule-Nielsen | — | — | Per-ink models underfit |
+| Savitzky-Golay / 3-NN denoising | — | — | No improvement |
+
+### 6.5 D-optimal anchor selection
+
+Greedy D-optimal (Sherman-Morrison update, Ridge λ=1e-6):
+- For N ≤ 50 anchors: 1.5–2.8× better P95 than random selection
+- At N ≥ 100: random catches up
+- At N = 200: P95 ≈ 2.6–3.6 (vs all-data P95 2.0–2.3)
+- At N = 500: P95 ≈ 2.5–3.1
+
+### 6.6 Known issues
+
+- Cross-dataset R2→R3 degraded (P95 3.2–3.7) — different paper substrate
+- Outlier filtering (OLS ΔE > mean+3σ) removes ~2% patches but doesn't improve P95
+- GPU unavailable — `@tensorflow/tfjs-node-gpu` has no pre-built binary for Node 24

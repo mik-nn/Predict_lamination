@@ -3,3 +3,4 @@ dist/
 .opencode/
 *.log
 .DS_Store
+Data/Icc/
