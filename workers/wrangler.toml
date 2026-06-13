@@ -1,0 +1,22 @@
+name = "lamination-api"
+main = "api.ts"
+compatibility_date = "2024-12-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "lamination"
+database_id = ""
+
+[[r2_buckets]]
+binding = "MODELS"
+bucket_name = "lamination-models"
+
+[[r2_buckets]]
+binding = "DATA"
+bucket_name = "lamination-data"
+
+[env.production]
+vars = { ENV = "production", JWT_SECRET = "" }
+
+[env.staging]
+vars = { ENV = "staging" }

@@ -1,5 +1,5 @@
 node_modules/
-dist/
+/dist/
 .opencode/
 *.log
 .DS_Store

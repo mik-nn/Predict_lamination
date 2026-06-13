@@ -1,135 +1,136 @@
-export function spectraToXyz(spectra: Float64Array): [number, number, number] {
-  let X = 0, Y = 0, Z = 0;
-  const S = D50_ILLUMINANT;
-  for (let i = 0; i < 36; i++) {
-    const r = spectra[i];
-    X += r * S[i] * CMF_X[i];
-    Y += r * S[i] * CMF_Y[i];
-    Z += r * S[i] * CMF_Z[i];
-  }
-  const k = 100 / (S.reduce((s, v, i) => s + v * CMF_Y[i], 0));
-  return [X * k, Y * k, Z * k];
-}
+// Color science utilities: Lab↔XYZ, D50, ΔE00 (CIEDE2000)
+// All browser-compatible, no external deps
 
-export function xyzToLab(xyz: [number, number, number], wp: [number, number, number]): [number, number, number] {
-  const [x, y, z] = xyz;
-  const [xw, yw, zw] = wp;
-  const fx = labF(x / xw);
-  const fy = labF(y / yw);
-  const fz = labF(z / zw);
+export const D50_XYZ: [number, number, number] = [0.9642, 1.0, 0.8249];
+const deg2rad = Math.PI / 180;
+
+// XYZ D50 → CIE Lab (0 ≤ L ≤ 100, -128 ≤ a,b ≤ 127)
+export function xyzToLab(x: number, y: number, z: number): [number, number, number] {
+  const f = (t: number) => t > 0.008856 ? Math.cbrt(t) : (903.3 * t + 16) / 116;
+  const fx = f(x / D50_XYZ[0]);
+  const fy = f(y);
+  const fz = f(z / D50_XYZ[2]);
   const L = 116 * fy - 16;
   const a = 500 * (fx - fy);
   const b = 200 * (fy - fz);
   return [L, a, b];
 }
 
-function labF(t: number): number {
-  const delta = 6 / 29;
-  return t > Math.pow(delta, 3) ? Math.cbrt(t) : t / (3 * Math.pow(delta, 2)) + 4 / 29;
+// CIE Lab → XYZ D50
+export function labToXyz(L: number, a: number, b: number): [number, number, number] {
+  const fy = (L + 16) / 116;
+  const fx = a / 500 + fy;
+  const fz = fy - b / 200;
+  const fInv = (t: number) => {
+    const t3 = t * t * t;
+    return t3 > 0.008856 ? t3 : (t - 16 / 116) / 7.787;
+  };
+  return [fInv(fx) * D50_XYZ[0], fInv(fy), fInv(fz) * D50_XYZ[2]];
 }
 
-export function deltaE00(lab1: [number, number, number], lab2: [number, number, number]): number {
-  const [L1, a1, b1] = lab1;
-  const [L2, a2, b2] = lab2;
+// Spectral → XYZ (D50 illuminant, 2° observer, 380-730nm @ 10nm)
+const D50_SPECTRAL: number[] = [
+  49.9755, 54.6482, 82.7549, 91.486, 93.4318, 86.6823,
+  104.865, 117.008, 117.812, 114.861, 115.923, 108.811,
+  109.35, 107.802, 104.79, 107.689, 104.406, 97.84,
+  96.334, 96.614, 92.435, 89.492, 96.259, 90.064,
+  89.707, 92.244, 90.988, 89.277, 91.405, 91.015,
+  89.195, 87.515, 92.155, 87.983, 84.881, 82.288,
+];
 
-  const avgL = (L1 + L2) / 2;
-  const C1 = Math.sqrt(a1 * a1 + b1 * b1);
-  const C2 = Math.sqrt(a2 * a2 + b2 * b2);
-  const avgC = (C1 + C2) / 2;
+const CIE_CMF_X: number[] = [
+  0.000169, 0.002361, 0.01911, 0.08474, 0.2045, 0.3147,
+  0.3837, 0.3707, 0.3023, 0.1956, 0.08051, 0.01617,
+  0.003817, 0.01567, 0.03747, 0.04865, 0.04973, 0.04583,
+  0.03801, 0.02867, 0.01984, 0.01264, 0.007417, 0.004032,
+  0.002184, 0.001193, 0.000589, 0.000325, 0.000176, 0.000097,
+  0.000053, 0.000028, 0.000015, 0.000009, 0.000004, 0.000002,
+];
+const CIE_CMF_Y: number[] = [
+  0.000002, 0.000032, 0.000265, 0.001503, 0.006809, 0.01872,
+  0.04844, 0.08984, 0.1282, 0.1275, 0.09146, 0.04351,
+  0.01464, 0.003575, 0.001294, 0.003468, 0.007966, 0.01086,
+  0.01115, 0.009887, 0.007827, 0.005646, 0.003694, 0.002148,
+  0.001196, 0.000662, 0.000370, 0.000200, 0.000108, 0.000059,
+  0.000032, 0.000017, 0.000010, 0.000005, 0.000003, 0.000001,
+];
+const CIE_CMF_Z: number[] = [
+  0.000750, 0.010690, 0.08601, 0.3895, 0.9725, 1.5535,
+  1.9673, 1.9948, 1.7454, 1.3176, 0.77213, 0.4149,
+  0.3837, 0.3864, 0.3866, 0.3792, 0.3631, 0.3290,
+  0.2795, 0.2158, 0.1571, 0.1080, 0.07098, 0.04368,
+  0.02535, 0.01433, 0.008049, 0.004520, 0.002521, 0.001401,
+  0.000776, 0.000434, 0.000249, 0.000137, 0.000075, 0.000040,
+];
 
-  const avgC7 = Math.pow(avgC, 7);
-  const G = 0.5 * (1 - Math.sqrt(avgC7 / (avgC7 + Math.pow(25, 7))));
+// Normalization constant for D50
+const NORM_D50 = D50_SPECTRAL.reduce((s, d, i) => s + d * CIE_CMF_Y[i], 0);
+
+export function spectralToXYZ(reflectance: number[]): [number, number, number] {
+  if (reflectance.length !== 36) {
+    throw new Error(`Expected 36-channel spectral data, got ${reflectance.length}`);
+  }
+  let X = 0, Y = 0, Z = 0;
+  for (let i = 0; i < 36; i++) {
+    const r = reflectance[i];
+    X += r * D50_SPECTRAL[i] * CIE_CMF_X[i];
+    Y += r * D50_SPECTRAL[i] * CIE_CMF_Y[i];
+    Z += r * D50_SPECTRAL[i] * CIE_CMF_Z[i];
+  }
+  X /= NORM_D50;
+  Y /= NORM_D50;
+  Z /= NORM_D50;
+  return [X, Y, Z];
+}
+
+// CIEDE2000
+export function deltaE00(L1: number, a1: number, b1: number, L2: number, a2: number, b2: number): number {
+  const L_avg = (L1 + L2) / 2;
+  const C1 = Math.hypot(a1, b1);
+  const C2 = Math.hypot(a2, b2);
+  const C_avg = (C1 + C2) / 2;
+  const G = 0.5 * (1 - Math.sqrt(Math.pow(C_avg, 7) / (Math.pow(C_avg, 7) + Math.pow(25, 7))));
+
   const a1p = a1 * (1 + G);
   const a2p = a2 * (1 + G);
-  const C1p = Math.sqrt(a1p * a1p + b1 * b1);
-  const C2p = Math.sqrt(a2p * a2p + b2 * b2);
-  const avgCp = (C1p + C2p) / 2;
+  const C1p = Math.hypot(a1p, b1);
+  const C2p = Math.hypot(a2p, b2);
+  const Cp_avg = (C1p + C2p) / 2;
 
-  const h1p = Math.atan2(b1, a1p) * 180 / Math.PI;
-  const h2p = Math.atan2(b2, a2p) * 180 / Math.PI;
-  const h1pDeg = h1p < 0 ? h1p + 360 : h1p;
-  const h2pDeg = h2p < 0 ? h2p + 360 : h2p;
+  const h1p = Math.atan2(b1, a1p) * (180 / Math.PI);
+  const h2p = Math.atan2(b2, a2p) * (180 / Math.PI);
+  const h1pd = h1p < 0 ? h1p + 360 : h1p;
+  const h2pd = h2p < 0 ? h2p + 360 : h2p;
 
-  const deltaLp = L2 - L1;
-  const deltaCp = C2p - C1p;
+  const dh = Math.abs(h1pd - h2pd) > 180
+    ? h2pd - h1pd + 360 * (h2pd <= h1pd ? 1 : -1)
+    : h2pd - h1pd;
+  const dHp = 2 * Math.sqrt(C1p * C2p) * Math.sin(dh * deg2rad / 2);
+  const dL = L2 - L1;
+  const dCp = C2p - C1p;
 
-  let deltahp: number;
-  const diffH = h2pDeg - h1pDeg;
-  if (C1p * C2p === 0) deltahp = 0;
-  else if (Math.abs(diffH) <= 180) deltahp = diffH;
-  else if (diffH > 180) deltahp = diffH - 360;
-  else deltahp = diffH + 360;
+  const Lp_avg = (L1 + L2) / 2;
+  const Cp_avg2 = (C1p + C2p) / 2;
+  const hp_avg = Math.abs(h1pd - h2pd) > 180
+    ? (h1pd + h2pd + 360) / 2
+    : (h1pd + h2pd) / 2;
 
-  const deltaHp = 2 * Math.sqrt(C1p * C2p) * Math.sin(deltahp * Math.PI / 360);
+  const T = 1 - 0.17 * Math.cos((hp_avg - 30) * deg2rad)
+    + 0.24 * Math.cos(2 * hp_avg * deg2rad)
+    + 0.32 * Math.cos((3 * hp_avg + 6) * deg2rad)
+    - 0.20 * Math.cos((4 * hp_avg - 63) * deg2rad);
 
-  const avgHp = (C1p * C2p === 0) ? h1pDeg + h2pDeg :
-    Math.abs(h1pDeg - h2pDeg) > 180 ? (h1pDeg + h2pDeg + 360) / 2 : (h1pDeg + h2pDeg) / 2;
+  const SL = 1 + 0.015 * Math.pow(Lp_avg - 50, 2) / Math.sqrt(20 + Math.pow(Lp_avg - 50, 2));
+  const SC = 1 + 0.045 * Cp_avg2;
+  const SH = 1 + 0.015 * Cp_avg2 * T;
 
-  const T = 1 - 0.17 * Math.cos((avgHp - 30) * Math.PI / 180)
-    + 0.24 * Math.cos(2 * avgHp * Math.PI / 180)
-    + 0.32 * Math.cos((3 * avgHp + 6) * Math.PI / 180)
-    - 0.2 * Math.cos((4 * avgHp - 63) * Math.PI / 180);
+  const RC = 2 * Math.sqrt(Math.pow(Cp_avg2, 7) / (Math.pow(Cp_avg2, 7) + Math.pow(25, 7)));
+  const dTheta = 30 * Math.exp(-Math.pow((hp_avg - 275) / 25, 2));
+  const RT = -Math.sin(2 * dTheta * deg2rad) * RC;
 
-  const SL = 1 + 0.015 * Math.pow(avgL - 50, 2) / Math.sqrt(20 + Math.pow(avgL - 50, 2));
-  const SC = 1 + 0.045 * avgCp;
-  const SH = 1 + 0.015 * avgCp * T;
-
-  const deltaTheta = 30 * Math.exp(-Math.pow((avgHp - 275) / 25, 2));
-  const avgCp7 = Math.pow(avgCp, 7);
-  const RC = 2 * Math.sqrt(avgCp7 / (avgCp7 + Math.pow(25, 7)));
-  const RT = -RC * Math.sin(2 * deltaTheta * Math.PI / 180);
-
-  return Math.sqrt(
-    Math.pow(deltaLp / SL, 2) +
-    Math.pow(deltaCp / SC, 2) +
-    Math.pow(deltaHp / SH, 2) +
-    RT * (deltaCp / SC) * (deltaHp / SH)
+  const de = Math.sqrt(
+    Math.pow(dL / SL, 2) + Math.pow(dCp / SC, 2) + Math.pow(dHp / SH, 2)
+    + RT * (dCp / SC) * (dHp / SH)
   );
+  return de;
 }
-
-export function patchToLab(spectra: Float64Array, wp: [number, number, number]): [number, number, number] {
-  return xyzToLab(spectraToXyz(spectra), wp);
-}
-
-export function computeWhitePoint(patches: { spectra: Float64Array }[]): [number, number, number] {
-  for (const p of patches) {
-    const xyz = spectraToXyz(p.spectra);
-    if (xyz[1] > 0) return xyz;
-  }
-  return [96.42, 100, 82.49];
-}
-
-const D50_ILLUMINANT = new Float64Array([
-  49.98, 54.65, 82.76, 91.49, 93.43, 86.68, 104.87, 117.01,
-  117.81, 114.86, 115.92, 108.81, 109.35, 107.80, 104.79, 107.69,
-  104.41, 104.05, 100.00, 96.33, 95.79, 88.69, 90.01, 89.60,
-  87.70, 83.29, 83.70, 80.03, 80.00, 82.00, 78.00, 72.00,
-  70.00, 68.00, 65.00, 64.00
-]);
-
-const CMF_X = new Float64Array([
-  0.001368, 0.002236, 0.004243, 0.007650, 0.014310, 0.023190,
-  0.043510, 0.077630, 0.134380, 0.214770, 0.283900, 0.328500,
-  0.348280, 0.348060, 0.336200, 0.318700, 0.290800, 0.251100,
-  0.195360, 0.142100, 0.095640, 0.058010, 0.032010, 0.014700,
-  0.004900, 0.002400, 0.009300, 0.029100, 0.063270, 0.109600,
-  0.165500, 0.225750, 0.290400, 0.359700, 0.433450, 0.512050
-]);
-
-const CMF_Y = new Float64Array([
-  0.000039, 0.000064, 0.000120, 0.000217, 0.000396, 0.000640,
-  0.001210, 0.002180, 0.004000, 0.007300, 0.011600, 0.016840,
-  0.023000, 0.029800, 0.038000, 0.048000, 0.060000, 0.073900,
-  0.090980, 0.112600, 0.139020, 0.169300, 0.208020, 0.258600,
-  0.323000, 0.407300, 0.503000, 0.608200, 0.710000, 0.793200,
-  0.862000, 0.914850, 0.954000, 0.980300, 0.994950, 1.000000
-]);
-
-const CMF_Z = new Float64Array([
-  0.006450, 0.010550, 0.020050, 0.036210, 0.067850, 0.110200,
-  0.207400, 0.371300, 0.645600, 1.039050, 1.385600, 1.622960,
-  1.747060, 1.782600, 1.772110, 1.744100, 1.669200, 1.528100,
-  1.287640, 1.041900, 0.812950, 0.616200, 0.465180, 0.353300,
-  0.272000, 0.212300, 0.158200, 0.111700, 0.078250, 0.057250,
-  0.042160, 0.029840, 0.020300, 0.013400, 0.008750, 0.005750
-]);

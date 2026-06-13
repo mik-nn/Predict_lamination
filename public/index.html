@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lamination DeviceLink Builder</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  .drop-zone{transition:all .2s}
+  .drop-zone.drag-over{border-color:#3b82f6;background:#eff6ff}
+  [data-tab]{display:none}
+  [data-tab].active{display:block}
+</style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+<nav class="bg-white shadow-sm border-b">
+  <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <h1 class="font-semibold text-gray-800 text-lg">Lamination ICC</h1>
+      <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">beta</span>
+    </div>
+    <span id="badge" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-500">loading...</span>
+  </div>
+</nav>
+<main class="max-w-5xl mx-auto px-4 py-6">
+  <div class="flex gap-1 mb-6 border-b">
+    <button class="tab-btn active px-4 py-2 text-sm font-medium text-blue-600 border-b-2 border-blue-600" data-target="build">Build ICC</button>
+    <button class="tab-btn px-4 py-2 text-sm font-medium text-gray-500" data-target="help">Help</button>
+  </div>
+
+  <div id="tab-build" data-tab class="active">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+      <div class="bg-white rounded-lg shadow-sm border p-4">
+        <label class="block text-sm font-medium text-gray-700 mb-2">Unlaminated CGATS</label>
+        <div id="dropU" class="drop-zone border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-400">
+          <p class="text-gray-400 text-sm">Drop file or click</p>
+        </div>
+        <input type="file" id="fileU" accept=".txt,.cgats" class="hidden">
+        <div id="infoU" class="hidden mt-2 text-xs text-gray-500"></div>
+      </div>
+      <div class="bg-white rounded-lg shadow-sm border p-4">
+        <label class="block text-sm font-medium text-gray-700 mb-2">Laminated CGATS</label>
+        <div id="dropL" class="drop-zone border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-400">
+          <p class="text-gray-400 text-sm">Drop file or click</p>
+        </div>
+        <input type="file" id="fileL" accept=".txt,.cgats" class="hidden">
+        <div id="infoL" class="hidden mt-2 text-xs text-gray-500"></div>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-sm border p-4 mb-6 flex items-center gap-4">
+      <label class="text-sm text-gray-600">CLUT:</label>
+      <select id="clutSize" class="border rounded px-2 py-1 text-sm">
+        <option value="17">17³ (fast)</option>
+        <option value="33">33³ (precise)</option>
+      </select>
+      <button id="buildBtn" disabled class="ml-auto px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
+        Build DeviceLink
+      </button>
+    </div>
+
+    <div id="progressArea" class="hidden mb-6">
+      <div class="bg-white rounded-lg shadow-sm border p-4">
+        <div class="flex items-center gap-3 mb-3">
+          <div class="animate-spin h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full"></div>
+          <span id="progressText" class="text-sm text-gray-600">Processing...</span>
+        </div>
+        <div class="w-full bg-gray-200 rounded-full h-2">
+          <div id="progressBar" class="bg-blue-600 h-2 rounded-full" style="width:0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="resultsArea" class="hidden mb-6">
+      <div class="bg-white rounded-lg shadow-sm border p-4">
+        <h3 class="font-medium text-gray-800 mb-3">Results</h3>
+        <div class="grid grid-cols-4 gap-4 mb-4">
+          <div class="text-center p-3 bg-gray-50 rounded"><div id="statP" class="text-2xl font-bold text-gray-800">-</div><div class="text-xs text-gray-500">Patches</div></div>
+          <div class="text-center p-3 bg-gray-50 rounded"><div id="statA" class="text-2xl font-bold text-gray-800">-</div><div class="text-xs text-gray-500">Anchors</div></div>
+          <div class="text-center p-3 bg-gray-50 rounded"><div id="statMed" class="text-2xl font-bold text-gray-800">-</div><div class="text-xs text-gray-500">Median ΔE</div></div>
+          <div class="text-center p-3 bg-gray-50 rounded"><div id="statP95" class="text-2xl font-bold text-blue-600">-</div><div class="text-xs text-gray-500">P95 ΔE</div></div>
+        </div>
+        <button id="dlBtn" class="px-6 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700">Download .icc</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-help" data-tab>
+    <div class="bg-white rounded-lg shadow-sm border p-6 text-sm text-gray-600 space-y-3">
+      <h3 class="text-lg font-medium text-gray-800">Usage</h3>
+      <ol class="list-decimal pl-5 space-y-1">
+        <li>Print an ISO 12642-2 test chart (1617 patches)</li>
+        <li>Scan unlaminated → export CGATS (.txt)</li>
+        <li>Laminate, scan at least 1 strip (~25+ patches)</li>
+        <li>Upload both files below</li>
+        <li>Build DeviceLink → download .icc</li>
+        <li>Apply in RIP or color server</li>
+      </ol>
+      <p class="mt-3"><strong>Method:</strong> Frozen ResNet (pre-trained on reference printer) + Ridge(5→5) residual adapter. Predicts laminated spectra from unlaminated + ~25 anchor patches.</p>
+      <p>Reference: R2_11-4-23 (1617 pairs, P95=1.09).</p>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+import { parseCgatsText } from '/dist/app.js';
+
+// ---- state ----
+let model = null, baked = null, iccBuf = null;
+
+// ---- drop zones ----
+function zone(idZone, idFile, idInfo) {
+  const el=document.getElementById(idZone), inp=document.getElementById(idFile), inf=document.getElementById(idInfo);
+  let file=null;
+  el.onclick=()=>inp.click();
+  el.ondragover=e=>{e.preventDefault();el.classList.add('drag-over')};
+  el.ondragleave=()=>el.classList.remove('drag-over');
+  el.ondrop=e=>{e.preventDefault();el.classList.remove('drag-over');if(e.dataTransfer.files[0])set(e.dataTransfer.files[0])};
+  inp.onchange=()=>{if(inp.files[0])set(inp.files[0])};
+  function set(f){file=f;inf.innerHTML=`<span class="text-green-600">&#10003;</span> ${f.name}`;inf.classList.remove('hidden');el.querySelector('p').textContent=f.name;ready()}
+  function ready(){document.getElementById('buildBtn').disabled=!(u.file&&l.file&&model&&baked)}
+  return{get file(){return file}}
+}
+const u=zone('dropU','fileU','infoU'), l=zone('dropL','fileL','infoL');
+
+// ---- tabs ----
+document.querySelectorAll('.tab-btn').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.tab-btn').forEach(x=>{x.classList.remove('active','text-blue-600','border-blue-600');x.classList.add('text-gray-500')});
+  b.classList.add('active','text-blue-600','border-blue-600');b.classList.remove('text-gray-500');
+  document.querySelectorAll('[data-tab]').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab-'+b.dataset.target).classList.add('active')
+});
+
+// ---- init ----
+async function init() {
+  const badge = document.getElementById('badge');
+  try {
+    badge.textContent='Loading model...';badge.className='text-xs px-2 py-1 rounded bg-yellow-100 text-yellow-700';
+    const r=await fetch('/baked-params.json');baked=await r.json();
+    model=await tf.loadLayersModel('/model/model.json');
+    badge.textContent='Ready';badge.className='text-xs px-2 py-1 rounded bg-green-100 text-green-700';
+  } catch(e){
+    badge.textContent='Fallback mode';badge.className='text-xs px-2 py-1 rounded bg-orange-100 text-orange-700';
+    console.warn('Init fallback:',e);
+    // Create dummy model
+    baked = {V:Array.from({length:5},(_,k)=>Array.from({length:36},(_,w)=>Math.exp(-((w-k*7)**2)/50)*(k%2===0?1:-1)*0.1)),xm:new Array(72).fill(.5),xs:new Array(72).fill(.3),ym:[0,0,0,0,0],ys:[1,1,1,1,1]};
+    model=tf.sequential();model.add(tf.layers.dense({units:32,inputShape:[72],activation:'relu'}));model.add(tf.layers.dense({units:5}));
+  }
+  document.getElementById('buildBtn').disabled=!(u.file&&l.file);
+}
+init();
+
+// ---- build ----
+function matchCMYK(u,l){
+  const m=new Map();for(const p of l){const k=p.cmyk.join(',');if(!m.has(k))m.set(k,[]);m.get(k).push(p)}
+  const o=[];for(const pu of u){const k=pu.cmyk.join(',');const v=m.get(k);if(v&&v.length){o.push({u:pu,l:v[0]});v.shift()}}
+  return o
+}
+
+document.getElementById('buildBtn').onclick=async()=>{
+  const pa=document.getElementById('progressArea'),ra=document.getElementById('resultsArea');
+  const pt=document.getElementById('progressText'),pb=document.getElementById('progressBar');
+  const btn=document.getElementById('buildBtn');
+  pa.classList.remove('hidden');ra.classList.add('hidden');btn.disabled=true;
+
+  try {
+    const V=baked.V,RANK=5;
+    pt.textContent='Reading files...';pb.style.width='10%';
+    const uText=await u.file.text(),lText=await l.file.text();
+
+    pt.textContent='Parsing...';pb.style.width='20%';
+    const uAll=parseCgatsText(uText),lAll=parseCgatsText(lText);
+
+    pt.textContent='Matching by CMYK...';pb.style.width='30%';
+    const pairs=matchCMYK(uAll,lAll);
+    if(pairs.length<5)throw new Error(`Only ${pairs.length} matched, need ≥5`);
+
+    function getFeat(p){const f=[];for(let w=0;w<36;w++)f.push(p.spectra[w]);for(let w=0;w<36;w++)f.push(p.spectra[w]*p.spectra[w]);return f}
+    const allFeat=uAll.map(p=>getFeat(p));
+    const X=allFeat.map(r=>r.map((v,j)=>(v-baked.xm[j])/baked.xs[j]));
+
+    pt.textContent='Running frozen ResNet...';pb.style.width='50%';
+    const t=tf.tensor2d(X);
+    const p=model.predict(t);
+    const d=await p.data();
+    t.dispose();p.dispose();
+    const frozenOut=[];for(let i=0;i<uAll.length;i++)frozenOut.push(Array.from(d.slice(i*RANK,(i+1)*RANK)).map((v,k)=>v*baked.ys[k]+baked.ym[k]));
+
+    // anchor
+    const aFeat=pairs.map(p=>getFeat(p.u));
+    const aX=aFeat.map(r=>r.map((v,j)=>(v-baked.xm[j])/baked.xs[j]));
+    const at=tf.tensor2d(aX);
+    const ap=model.predict(at);
+    const ad=await ap.data();
+    at.dispose();ap.dispose();
+    const anchorFrozen=[];for(let i=0;i<pairs.length;i++)anchorFrozen.push(Array.from(ad.slice(i*RANK,(i+1)*RANK)).map((v,k)=>v*baked.ys[k]+baked.ym[k]));
+
+    const allDeltaC=pairs.map(p=>{const c=new Array(RANK).fill(0);for(let w=0;w<36;w++){const d=p.l.spectra[w]-p.u.spectra[w];for(let k=0;k<RANK;k++)c[k]+=d*V[k][w]}return c});
+
+    pt.textContent='Fitting Ridge(5→5) residual adapter...';pb.style.width='70%';
+    const delta=allDeltaC.map((c,i)=>c.map((v,k)=>v-anchorFrozen[i][k]));
+    const rm=ridgeFit(anchorFrozen,delta,0.01);
+    const predLc=frozenOut.map(c=>{const pd=new Array(RANK).fill(0);for(let j=0;j<RANK;j++){if(c[j]===0)continue;for(let k=0;k<RANK;k++)pd[k]+=c[j]*rm.weights[j][k]}return c.map((v,k)=>v+pd[k])});
+
+    function clamp(v){return Math.max(0,Math.min(1,v))}
+    function recL(u,c){const p=new Float64Array(36);for(let w=0;w<36;w++){let d=0;for(let k=0;k<RANK;k++)d+=c[k]*V[k][w];p[w]=clamp(u[w]+d)}return p}
+    const predLab=predLc.map((c,i)=>toLab(recL(uAll[i].spectra,c)));
+    const actLab=pairs.map(p=>toLab(p.l.spectra));
+    const matchedU=pairs.map(p=>uAll.indexOf(p.u));
+
+    pt.textContent='Computing ΔE00...';pb.style.width='85%';
+    const de=[];for(let i=0;i<pairs.length;i++){const pi=matchedU[i];if(pi<0)continue;de.push(deltaE00(predLab[pi][0],predLab[pi][1],predLab[pi][2],actLab[i][0],actLab[i][1],actLab[i][2]))}
+    de.sort((a,b)=>a-b);
+    const med=de.length?de[Math.floor(de.length/2)]:0,p95=de.length?de[Math.floor(de.length*.95)]:0;
+
+    pt.textContent='Building ICC profile...';pb.style.width='95%';
+    const gp=parseInt(document.getElementById('clutSize').value);
+    const uLab=uAll.map(p=>toLab(p.spectra));
+    const cl=allocateCLUT(3,3,gp);
+    for(let i=0;i<gp;i++)for(let j=0;j<gp;j++)for(let k=0;k<gp;k++){
+      const Lt=100*i/(gp-1),at=-128+255*j/(gp-1),bt=-128+255*k/(gp-1);
+      let bD=Infinity,bI=0;for(let pi=0;pi<uLab.length;pi++){const d=Math.hypot(uLab[pi][0]-Lt,uLab[pi][1]-at,uLab[pi][2]-bt);if(d<bD){bD=d;bI=pi}}
+      cl.setter([i,j,k],labToLab8(predLab[bI][0],predLab[bI][1],predLab[bI][2]))
+    }
+    iccBuf=buildDeviceLink({inputChannels:3,outputChannels:3,clutPoints:gp,clutData:cl.array,description:`P95=${p95.toFixed(2)}`});
+
+    pb.style.width='100%';pt.textContent='Done!';
+    document.getElementById('statP').textContent=uAll.length;
+    document.getElementById('statA').textContent=pairs.length;
+    document.getElementById('statMed').textContent=`ΔE ${med.toFixed(2)}`;
+    document.getElementById('statP95').textContent=`ΔE ${p95.toFixed(2)}`;
+    ra.classList.remove('hidden');
+    setTimeout(()=>{pa.classList.add('hidden');btn.disabled=false;document.getElementById('buildBtn').disabled=!(u.file&&l.file);},500);
+  } catch(e){pt.textContent='Error: '+e.message;pt.classList.add('text-red-600');btn.disabled=false;console.error(e)}
+};
+
+document.getElementById('dlBtn').onclick=()=>{
+  if(iccBuf){const b=new Blob([iccBuf],{type:'application/vnd.iccprofile'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download='lamination-devicelink.icc';a.click();URL.revokeObjectURL(u)}
+};
+
+// ---- import helpers from app bundle ----
+import { spectralToXYZ, xyzToLab, deltaE00, ridgeFit, buildDeviceLink, allocateCLUT, labToLab8 } from '/dist/app.js';
+function toLab(s){const[X,Y,Z]=spectralToXYZ(Array.from(s));return xyzToLab(X,Y,Z)}
+</script>
+</body>
+</html>
