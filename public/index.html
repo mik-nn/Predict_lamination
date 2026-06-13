@@ -5,11 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Lamination DeviceLink Builder</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="/tf.min.js"></script>
 <style>
   .drop-zone{transition:all .2s}
   .drop-zone.drag-over{border-color:#3b82f6;background:#eff6ff}
-  [data-tab]{display:none}
-  [data-tab].active{display:block}
+  .step-indicator .step-num{transition:all .3s}
+  .step-indicator .step-bar{transition:all .3s}
+  .step-panel{display:none}
+  .step-panel.active{display:block}
 </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -22,44 +25,91 @@
     <span id="badge" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-500">loading...</span>
   </div>
 </nav>
+
 <main class="max-w-5xl mx-auto px-4 py-6">
-  <div class="flex gap-1 mb-6 border-b">
-    <button class="tab-btn active px-4 py-2 text-sm font-medium text-blue-600 border-b-2 border-blue-600" data-target="build">Build ICC</button>
-    <button class="tab-btn px-4 py-2 text-sm font-medium text-gray-500" data-target="help">Help</button>
+  <!-- Step indicators -->
+  <div class="step-indicator flex items-center gap-0 mb-8">
+    <div class="flex items-center">
+      <div id="s1-circle" class="step-num w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold">1</div>
+      <span id="s1-label" class="ml-2 text-sm font-medium text-blue-600">Upload &amp; Analyze</span>
+    </div>
+    <div class="step-bar mx-3 h-0.5 w-16 bg-gray-300" id="bar-1"></div>
+    <div class="flex items-center">
+      <div id="s2-circle" class="step-num w-8 h-8 rounded-full bg-gray-300 text-gray-500 flex items-center justify-center text-sm font-bold">2</div>
+      <span id="s2-label" class="ml-2 text-sm text-gray-400">Verify</span>
+    </div>
+    <div class="step-bar mx-3 h-0.5 w-16 bg-gray-300" id="bar-2"></div>
+    <div class="flex items-center">
+      <div id="s3-circle" class="step-num w-8 h-8 rounded-full bg-gray-300 text-gray-500 flex items-center justify-center text-sm font-bold">3</div>
+      <span id="s3-label" class="ml-2 text-sm text-gray-400">Build ICC</span>
+    </div>
   </div>
 
-  <div id="tab-build" data-tab class="active">
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-      <div class="bg-white rounded-lg shadow-sm border p-4">
-        <label class="block text-sm font-medium text-gray-700 mb-2">Unlaminated CGATS</label>
-        <div id="dropU" class="drop-zone border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-400">
-          <p class="text-gray-400 text-sm">Drop file or click</p>
-        </div>
-        <input type="file" id="fileU" accept=".txt,.cgats" class="hidden">
-        <div id="infoU" class="hidden mt-2 text-xs text-gray-500"></div>
+  <!-- STEP 1: Upload unlaminated + analyze rows -->
+  <div id="step-1" class="step-panel active">
+    <div class="bg-white rounded-lg shadow-sm border p-4 mb-4">
+      <label class="block text-sm font-medium text-gray-700 mb-2">1. Upload unlaminated CGATS (full chart)</label>
+      <div id="dropU" class="drop-zone border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-400">
+        <p class="text-gray-400 text-sm">Drop file or click</p>
       </div>
-      <div class="bg-white rounded-lg shadow-sm border p-4">
-        <label class="block text-sm font-medium text-gray-700 mb-2">Laminated CGATS</label>
-        <div id="dropL" class="drop-zone border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-400">
-          <p class="text-gray-400 text-sm">Drop file or click</p>
-        </div>
-        <input type="file" id="fileL" accept=".txt,.cgats" class="hidden">
-        <div id="infoL" class="hidden mt-2 text-xs text-gray-500"></div>
+      <input type="file" id="fileU" accept=".txt,.cgats" class="hidden">
+      <div id="infoU" class="hidden mt-2 text-xs text-gray-500"></div>
+    </div>
+
+    <div id="rowsInputArea" class="bg-white rounded-lg shadow-sm border p-4 mb-4 hidden">
+      <label class="block text-sm font-medium text-gray-700 mb-2">2. Total physical scan strips (rows):</label>
+      <div class="flex items-center gap-3">
+        <input id="totalRows" type="number" min="1" max="200" value="51" class="border rounded px-3 py-2 text-sm w-24">
+        <span id="patchInfo" class="text-xs text-gray-500"></span>
+        <button id="analyzeBtn" disabled class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">Analyze rows</button>
       </div>
     </div>
 
-    <div class="bg-white rounded-lg shadow-sm border p-4 mb-6 flex items-center gap-4">
+    <div id="diversityArea" class="hidden">
+      <div class="bg-white rounded-lg shadow-sm border p-4 mb-4">
+        <h3 class="font-medium text-gray-800 mb-3">Row diversity scores</h3>
+        <div id="diversityTable" class="overflow-x-auto"></div>
+        <div class="mt-4 flex items-center gap-4">
+          <button id="dlSubsetBtn" disabled class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed">Download subset CGATS ↓</button>
+          <span id="subsetInfo" class="text-xs text-gray-500"></span>
+          <button id="toStep2Btn" disabled class="ml-auto px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">Continue →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 2: Upload laminated + verify -->
+  <div id="step-2" class="step-panel">
+    <div class="bg-white rounded-lg shadow-sm border p-4 mb-4">
+      <label class="block text-sm font-medium text-gray-700 mb-2">Upload laminated CGATS (measured subset)</label>
+      <div id="dropL" class="drop-zone border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-400">
+        <p class="text-gray-400 text-sm">Drop file or click</p>
+      </div>
+      <input type="file" id="fileL" accept=".txt,.cgats" class="hidden">
+      <div id="infoL" class="hidden mt-2 text-xs text-gray-500"></div>
+    </div>
+
+    <div id="verifyArea" class="hidden">
+      <div class="bg-white rounded-lg shadow-sm border p-4 mb-4">
+        <h3 class="font-medium text-gray-800 mb-3">Verification</h3>
+        <div id="verifyResult" class="text-sm"></div>
+        <button id="toStep3Btn" disabled class="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">Continue →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 3: Build ICC -->
+  <div id="step-3" class="step-panel">
+    <div class="bg-white rounded-lg shadow-sm border p-4 mb-4 flex items-center gap-4">
       <label class="text-sm text-gray-600">CLUT:</label>
       <select id="clutSize" class="border rounded px-2 py-1 text-sm">
         <option value="17">17³ (fast)</option>
         <option value="33">33³ (precise)</option>
       </select>
-      <button id="buildBtn" disabled class="ml-auto px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
-        Build DeviceLink
-      </button>
+      <button id="buildBtn" class="ml-auto px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">Build DeviceLink</button>
     </div>
 
-    <div id="progressArea" class="hidden mb-6">
+    <div id="progressArea" class="hidden mb-4">
       <div class="bg-white rounded-lg shadow-sm border p-4">
         <div class="flex items-center gap-3 mb-3">
           <div class="animate-spin h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full"></div>
@@ -71,7 +121,7 @@
       </div>
     </div>
 
-    <div id="resultsArea" class="hidden mb-6">
+    <div id="resultsArea" class="hidden mb-4">
       <div class="bg-white rounded-lg shadow-sm border p-4">
         <h3 class="font-medium text-gray-800 mb-3">Results</h3>
         <div class="grid grid-cols-4 gap-4 mb-4">
@@ -84,163 +134,332 @@
       </div>
     </div>
   </div>
-
-  <div id="tab-help" data-tab>
-    <div class="bg-white rounded-lg shadow-sm border p-6 text-sm text-gray-600 space-y-3">
-      <h3 class="text-lg font-medium text-gray-800">Usage</h3>
-      <ol class="list-decimal pl-5 space-y-1">
-        <li>Print an ISO 12642-2 test chart (1617 patches)</li>
-        <li>Scan unlaminated → export CGATS (.txt)</li>
-        <li>Laminate, scan at least 1 strip (~25+ patches)</li>
-        <li>Upload both files below</li>
-        <li>Build DeviceLink → download .icc</li>
-        <li>Apply in RIP or color server</li>
-      </ol>
-      <p class="mt-3"><strong>Method:</strong> Frozen ResNet (pre-trained on reference printer) + Ridge(5→5) residual adapter. Predicts laminated spectra from unlaminated + ~25 anchor patches.</p>
-      <p>Reference: R2_11-4-23 (1617 pairs, P95=1.09).</p>
-    </div>
-  </div>
 </main>
 
 <script type="module">
-import { parseCgatsText } from '/dist/app.js';
+import { parseCgatsText, computeRows, rowDiversityScores, generateSubsetCGATS, verifySubsetMatch } from '/dist/app.js';
 
 // ---- state ----
-let model = null, baked = null, iccBuf = null;
+let model = null, baked = null;
+let uFile = null, lFile = null;
+let uPatches = null, frozenCvals = null;
+let analyzeResult = null;
+let selectedRows = [];
+let subsetText = null;
+let lPatches = null;
+let iccBuf = null;
 
-// ---- drop zones ----
-function zone(idZone, idFile, idInfo) {
-  const el=document.getElementById(idZone), inp=document.getElementById(idFile), inf=document.getElementById(idInfo);
-  let file=null;
-  el.onclick=()=>inp.click();
-  el.ondragover=e=>{e.preventDefault();el.classList.add('drag-over')};
-  el.ondragleave=()=>el.classList.remove('drag-over');
-  el.ondrop=e=>{e.preventDefault();el.classList.remove('drag-over');if(e.dataTransfer.files[0])set(e.dataTransfer.files[0])};
-  inp.onchange=()=>{if(inp.files[0])set(inp.files[0])};
-  function set(f){file=f;inf.innerHTML=`<span class="text-green-600">&#10003;</span> ${f.name}`;inf.classList.remove('hidden');el.querySelector('p').textContent=f.name;ready()}
-  function ready(){document.getElementById('buildBtn').disabled=!(u.file&&l.file&&model&&baked)}
-  return{get file(){return file}}
+// ---- step navigation ----
+function goToStep(n) {
+  document.querySelectorAll('.step-panel').forEach(el => el.classList.remove('active'));
+  document.getElementById(`step-${n}`).classList.add('active');
+  for (let i = 1; i <= 3; i++) {
+    const circle = document.getElementById(`s${i}-circle`);
+    const label = document.getElementById(`s${i}-label`);
+    if (i < n) {
+      circle.className = 'step-num w-8 h-8 rounded-full bg-green-500 text-white flex items-center justify-center text-sm font-bold';
+      label.className = 'ml-2 text-sm font-medium text-green-600';
+    } else if (i === n) {
+      circle.className = 'step-num w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold';
+      label.className = 'ml-2 text-sm font-medium text-blue-600';
+    } else {
+      circle.className = 'step-num w-8 h-8 rounded-full bg-gray-300 text-gray-500 flex items-center justify-center text-sm font-bold';
+      label.className = 'ml-2 text-sm text-gray-400';
+    }
+    if (i < n) {
+      document.getElementById(`bar-${i}`).className = 'step-bar mx-3 h-0.5 w-16 bg-green-500';
+    } else {
+      document.getElementById(`bar-${i}`).className = 'step-bar mx-3 h-0.5 w-16 bg-gray-300';
+    }
+  }
+  if (n === 3) {
+    document.getElementById('buildBtn').disabled = false;
+  }
 }
-const u=zone('dropU','fileU','infoU'), l=zone('dropL','fileL','infoL');
 
-// ---- tabs ----
-document.querySelectorAll('.tab-btn').forEach(b=>b.onclick=()=>{
-  document.querySelectorAll('.tab-btn').forEach(x=>{x.classList.remove('active','text-blue-600','border-blue-600');x.classList.add('text-gray-500')});
-  b.classList.add('active','text-blue-600','border-blue-600');b.classList.remove('text-gray-500');
-  document.querySelectorAll('[data-tab]').forEach(t=>t.classList.remove('active'));
-  document.getElementById('tab-'+b.dataset.target).classList.add('active')
-});
+// ---- drop zone helper ----
+function makeDropZone(idZone, idFile, idInfo) {
+  const el = document.getElementById(idZone);
+  const inp = document.getElementById(idFile);
+  const inf = document.getElementById(idInfo);
+  let file = null;
+  el.onclick = () => inp.click();
+  el.ondragover = e => { e.preventDefault(); el.classList.add('drag-over'); };
+  el.ondragleave = () => el.classList.remove('drag-over');
+  el.ondrop = e => { e.preventDefault(); el.classList.remove('drag-over'); if (e.dataTransfer.files[0]) set(e.dataTransfer.files[0]); };
+  inp.onchange = () => { if (inp.files[0]) set(inp.files[0]); };
+  function set(f) { file = f; inf.innerHTML = `<span class="text-green-600">&#10003;</span> ${f.name}`; inf.classList.remove('hidden'); el.querySelector('p').textContent = f.name; onFile(); }
+  function onFile() { if (idZone === 'dropU') onUFile(); else onLFile(); }
+  return { get file() { return file; }, reset() { file = null; inf.classList.add('hidden'); el.querySelector('p').textContent = 'Drop file or click'; } };
+}
+const u = makeDropZone('dropU', 'fileU', 'infoU');
+const l = makeDropZone('dropL', 'fileL', 'infoL');
+
+// ---- U file loaded ----
+function onUFile() {
+  const area = document.getElementById('rowsInputArea');
+  area.classList.remove('hidden');
+  document.getElementById('analyzeBtn').disabled = false;
+}
+
+// ---- L file loaded ----
+async function onLFile() {
+  if (!l.file) return;
+  try {
+    const text = await l.file.text();
+    lPatches = parseCgatsText(text);
+    doVerify();
+  } catch (e) {
+    document.getElementById('verifyResult').innerHTML = `<span class="text-red-600">Parse error: ${e.message}</span>`;
+    document.getElementById('verifyArea').classList.remove('hidden');
+  }
+}
+
+// ---- analyze rows ----
+document.getElementById('analyzeBtn').onclick = async () => {
+  if (!u.file || !model || !baked) return;
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = true;
+  btn.textContent = 'Analyzing...';
+
+  try {
+    const uText = await u.file.text();
+    uPatches = parseCgatsText(uText);
+    const totalRows = parseInt(document.getElementById('totalRows').value) || 1;
+    const ppRow = Math.ceil(uPatches.length / totalRows);
+
+    // feature extraction
+    function getFeat(p) { const f = []; for (let w = 0; w < 36; w++) f.push(p.spectra[w]); for (let w = 0; w < 36; w++) f.push(p.spectra[w] * p.spectra[w]); return f; }
+    const allFeat = uPatches.map(p => getFeat(p));
+    const norm = allFeat.map(r => r.map((v, j) => (v - baked.xm[j]) / baked.xs[j]));
+
+    const t = tf.tensor2d(norm);
+    const pred = model.predict(t);
+    const arr = await pred.array();
+    t.dispose(); pred.dispose();
+
+    frozenCvals = arr.map(row => row.map((v, k) => v * baked.ys[k] + baked.ym[k]));
+
+    const diversity = rowDiversityScores(frozenCvals, ppRow, uPatches.length, 1);
+
+    analyzeResult = { totalPatches: uPatches.length, patchesPerRow: ppRow };
+
+    renderDiversity(diversity, ppRow);
+    document.getElementById('diversityArea').classList.remove('hidden');
+    btn.textContent = 'Analyze rows';
+  } catch (e) {
+    document.getElementById('diversityArea').classList.remove('hidden');
+    document.getElementById('diversityTable').innerHTML = `<span class="text-red-600">Error: ${e.message}</span>`;
+    btn.textContent = 'Analyze rows';
+    btn.disabled = false;
+    console.error(e);
+  }
+};
+
+function renderDiversity(diversity, ppRow) {
+  const div = document.getElementById('diversityTable');
+  let html = '<table class="w-full text-sm"><thead><tr class="border-b text-left text-gray-500"><th class="pb-2 pr-4">Row</th><th class="pb-2 pr-4">Patches</th><th class="pb-2 pr-4">Diversity</th><th class="pb-2 pr-4">Select</th></tr></thead><tbody>';
+  for (const r of diversity) {
+    const checked = r.isRecommended ? 'checked' : '';
+    const star = r.isRecommended ? ' ★' : '';
+    html += `<tr class="border-b ${r.isRecommended ? 'bg-blue-50' : ''}">
+      <td class="py-2 pr-4 font-mono">Row ${r.rowIndex}${star}</td>
+      <td class="py-2 pr-4">${r.patchCount} (×${ppRow} max)</td>
+      <td class="py-2 pr-4 font-mono">${r.diversity.toFixed(4)}</td>
+      <td class="py-2"><input type="checkbox" class="row-cb" data-row="${r.rowIndex}" ${checked}></td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  div.innerHTML = html;
+
+  // checkbox handler
+  div.querySelectorAll('.row-cb').forEach(cb => {
+    cb.onchange = () => {
+      selectedRows = Array.from(div.querySelectorAll('.row-cb:checked')).map(c => parseInt(c.dataset.row));
+      updateSubsetBtn();
+    };
+  });
+
+  // initial selection from recommended
+  selectedRows = Array.from(div.querySelectorAll('.row-cb:checked')).map(c => parseInt(c.dataset.row));
+  updateSubsetBtn();
+}
+
+function updateSubsetBtn() {
+  const btn = document.getElementById('dlSubsetBtn');
+  const info = document.getElementById('subsetInfo');
+  const to2 = document.getElementById('toStep2Btn');
+  const n = selectedRows.length;
+  const patches = n * analyzeResult.patchesPerRow;
+  btn.disabled = n === 0;
+  btn.textContent = `Download subset CGATS (${n} row${n !== 1 ? 's' : ''}, ~${patches} patches) ↓`;
+  info.textContent = n > 0 ? `Total: ~${patches} patches for lamination` : 'Select at least 1 row';
+  to2.disabled = true;
+}
+
+// ---- download subset ----
+document.getElementById('dlSubsetBtn').onclick = async () => {
+  if (!u.file || selectedRows.length === 0) return;
+  try {
+    const text = await u.file.text();
+    subsetText = generateSubsetCGATS(text, selectedRows, analyzeResult.patchesPerRow, analyzeResult.totalPatches);
+    const blob = new Blob([subsetText], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'lamination-subset.txt';
+    a.click();
+    URL.revokeObjectURL(url);
+    document.getElementById('toStep2Btn').disabled = false;
+    document.getElementById('subsetInfo').textContent += ' ✓ Downloading — now laminate those strips, measure, and proceed to Step 2';
+  } catch (e) {
+    document.getElementById('subsetInfo').textContent = `Error: ${e.message}`;
+  }
+};
+
+document.getElementById('toStep2Btn').onclick = () => goToStep(2);
+
+// ---- verify ----
+function doVerify() {
+  if (!lPatches || !analyzeResult || selectedRows.length === 0) return;
+  const result = verifySubsetMatch(uPatches, lPatches, selectedRows, analyzeResult.patchesPerRow);
+  const div = document.getElementById('verifyResult');
+  const ok = result.ok;
+  let html = `<div class="mb-3">
+    <span class="font-medium ${ok ? 'text-green-600' : 'text-red-600'}">${ok ? '✓ Verified' : '✗ Mismatch'}</span>
+    <span class="text-gray-600 ml-2">${result.matched} of ${result.expected} patches matched by CMYK</span>
+  </div>`;
+  if (result.extra.length > 0) {
+    html += `<p class="text-yellow-600 text-xs">${result.extra.length} extra patches not in expected rows</p>`;
+  }
+  if (result.missing.length > 0) {
+    html += `<p class="text-red-600 text-xs">${result.missing.length} expected CMYK combinations missing</p>`;
+  }
+  div.innerHTML = html;
+  document.getElementById('verifyArea').classList.remove('hidden');
+  document.getElementById('toStep3Btn').disabled = !ok;
+}
+
+document.getElementById('toStep3Btn').onclick = () => {
+  goToStep(3);
+  document.getElementById('buildBtn').disabled = false;
+};
 
 // ---- init ----
 async function init() {
   const badge = document.getElementById('badge');
   try {
-    badge.textContent='Loading model...';badge.className='text-xs px-2 py-1 rounded bg-yellow-100 text-yellow-700';
-    const r=await fetch('/baked-params.json');baked=await r.json();
-    model=await tf.loadLayersModel('/model/model.json');
-    badge.textContent='Ready';badge.className='text-xs px-2 py-1 rounded bg-green-100 text-green-700';
-  } catch(e){
-    badge.textContent='Fallback mode';badge.className='text-xs px-2 py-1 rounded bg-orange-100 text-orange-700';
-    console.warn('Init fallback:',e);
-    // Create dummy model
-    baked = {V:Array.from({length:5},(_,k)=>Array.from({length:36},(_,w)=>Math.exp(-((w-k*7)**2)/50)*(k%2===0?1:-1)*0.1)),xm:new Array(72).fill(.5),xs:new Array(72).fill(.3),ym:[0,0,0,0,0],ys:[1,1,1,1,1]};
-    model=tf.sequential();model.add(tf.layers.dense({units:32,inputShape:[72],activation:'relu'}));model.add(tf.layers.dense({units:5}));
+    badge.textContent = 'Loading model...'; badge.className = 'text-xs px-2 py-1 rounded bg-yellow-100 text-yellow-700';
+    const r = await fetch('/baked-params.json'); baked = await r.json();
+    model = await tf.loadLayersModel('/model/model.json');
+    badge.textContent = 'Ready'; badge.className = 'text-xs px-2 py-1 rounded bg-green-100 text-green-700';
+  } catch (e) {
+    badge.textContent = 'Fallback mode'; badge.className = 'text-xs px-2 py-1 rounded bg-orange-100 text-orange-700';
+    console.warn('Init fallback:', e);
+    baked = { V: Array.from({ length: 5 }, (_, k) => Array.from({ length: 36 }, (_, w) => Math.exp(-((w - k * 7) ** 2) / 50) * (k % 2 === 0 ? 1 : -1) * 0.1)), xm: new Array(72).fill(.5), xs: new Array(72).fill(.3), ym: [0, 0, 0, 0, 0], ys: [1, 1, 1, 1, 1] };
+    model = tf.sequential(); model.add(tf.layers.dense({ units: 32, inputShape: [72], activation: 'relu' })); model.add(tf.layers.dense({ units: 5 }));
   }
-  document.getElementById('buildBtn').disabled=!(u.file&&l.file);
 }
 init();
 
-// ---- build ----
-function matchCMYK(u,l){
-  const m=new Map();for(const p of l){const k=p.cmyk.join(',');if(!m.has(k))m.set(k,[]);m.get(k).push(p)}
-  const o=[];for(const pu of u){const k=pu.cmyk.join(',');const v=m.get(k);if(v&&v.length){o.push({u:pu,l:v[0]});v.shift()}}
-  return o
-}
-
-document.getElementById('buildBtn').onclick=async()=>{
-  const pa=document.getElementById('progressArea'),ra=document.getElementById('resultsArea');
-  const pt=document.getElementById('progressText'),pb=document.getElementById('progressBar');
-  const btn=document.getElementById('buildBtn');
-  pa.classList.remove('hidden');ra.classList.add('hidden');btn.disabled=true;
+// ---- build ICC (step 3) ----
+document.getElementById('buildBtn').onclick = async () => {
+  if (!model || !baked || !uPatches || !lPatches) return;
+  const pa = document.getElementById('progressArea');
+  const ra = document.getElementById('resultsArea');
+  const pt = document.getElementById('progressText');
+  const pb = document.getElementById('progressBar');
+  const btn = document.getElementById('buildBtn');
+  pa.classList.remove('hidden'); ra.classList.add('hidden'); btn.disabled = true;
 
   try {
-    const V=baked.V,RANK=5;
-    pt.textContent='Reading files...';pb.style.width='10%';
-    const uText=await u.file.text(),lText=await l.file.text();
+    const V = baked.V, RANK = 5;
+    pt.textContent = 'Matching by CMYK...'; pb.style.width = '20%';
 
-    pt.textContent='Parsing...';pb.style.width='20%';
-    const uAll=parseCgatsText(uText),lAll=parseCgatsText(lText);
-
-    pt.textContent='Matching by CMYK...';pb.style.width='30%';
-    const pairs=matchCMYK(uAll,lAll);
-    if(pairs.length<5)throw new Error(`Only ${pairs.length} matched, need ≥5`);
-
-    function getFeat(p){const f=[];for(let w=0;w<36;w++)f.push(p.spectra[w]);for(let w=0;w<36;w++)f.push(p.spectra[w]*p.spectra[w]);return f}
-    const allFeat=uAll.map(p=>getFeat(p));
-    const X=allFeat.map(r=>r.map((v,j)=>(v-baked.xm[j])/baked.xs[j]));
-
-    pt.textContent='Running frozen ResNet...';pb.style.width='50%';
-    const t=tf.tensor2d(X);
-    const p=model.predict(t);
-    const d=await p.data();
-    t.dispose();p.dispose();
-    const frozenOut=[];for(let i=0;i<uAll.length;i++)frozenOut.push(Array.from(d.slice(i*RANK,(i+1)*RANK)).map((v,k)=>v*baked.ys[k]+baked.ym[k]));
-
-    // anchor
-    const aFeat=pairs.map(p=>getFeat(p.u));
-    const aX=aFeat.map(r=>r.map((v,j)=>(v-baked.xm[j])/baked.xs[j]));
-    const at=tf.tensor2d(aX);
-    const ap=model.predict(at);
-    const ad=await ap.data();
-    at.dispose();ap.dispose();
-    const anchorFrozen=[];for(let i=0;i<pairs.length;i++)anchorFrozen.push(Array.from(ad.slice(i*RANK,(i+1)*RANK)).map((v,k)=>v*baked.ys[k]+baked.ym[k]));
-
-    const allDeltaC=pairs.map(p=>{const c=new Array(RANK).fill(0);for(let w=0;w<36;w++){const d=p.l.spectra[w]-p.u.spectra[w];for(let k=0;k<RANK;k++)c[k]+=d*V[k][w]}return c});
-
-    pt.textContent='Fitting Ridge(5→5) residual adapter...';pb.style.width='70%';
-    const delta=allDeltaC.map((c,i)=>c.map((v,k)=>v-anchorFrozen[i][k]));
-    const rm=ridgeFit(anchorFrozen,delta,0.01);
-    const predLc=frozenOut.map(c=>{const pd=new Array(RANK).fill(0);for(let j=0;j<RANK;j++){if(c[j]===0)continue;for(let k=0;k<RANK;k++)pd[k]+=c[j]*rm.weights[j][k]}return c.map((v,k)=>v+pd[k])});
-
-    function clamp(v){return Math.max(0,Math.min(1,v))}
-    function recL(u,c){const p=new Float64Array(36);for(let w=0;w<36;w++){let d=0;for(let k=0;k<RANK;k++)d+=c[k]*V[k][w];p[w]=clamp(u[w]+d)}return p}
-    const predLab=predLc.map((c,i)=>toLab(recL(uAll[i].spectra,c)));
-    const actLab=pairs.map(p=>toLab(p.l.spectra));
-    const matchedU=pairs.map(p=>uAll.indexOf(p.u));
-
-    pt.textContent='Computing ΔE00...';pb.style.width='85%';
-    const de=[];for(let i=0;i<pairs.length;i++){const pi=matchedU[i];if(pi<0)continue;de.push(deltaE00(predLab[pi][0],predLab[pi][1],predLab[pi][2],actLab[i][0],actLab[i][1],actLab[i][2]))}
-    de.sort((a,b)=>a-b);
-    const med=de.length?de[Math.floor(de.length/2)]:0,p95=de.length?de[Math.floor(de.length*.95)]:0;
-
-    pt.textContent='Building ICC profile...';pb.style.width='95%';
-    const gp=parseInt(document.getElementById('clutSize').value);
-    const uLab=uAll.map(p=>toLab(p.spectra));
-    const cl=allocateCLUT(3,3,gp);
-    for(let i=0;i<gp;i++)for(let j=0;j<gp;j++)for(let k=0;k<gp;k++){
-      const Lt=100*i/(gp-1),at=-128+255*j/(gp-1),bt=-128+255*k/(gp-1);
-      let bD=Infinity,bI=0;for(let pi=0;pi<uLab.length;pi++){const d=Math.hypot(uLab[pi][0]-Lt,uLab[pi][1]-at,uLab[pi][2]-bt);if(d<bD){bD=d;bI=pi}}
-      cl.setter([i,j,k],labToLab8(predLab[bI][0],predLab[bI][1],predLab[bI][2]))
+    const expectedIndices = new Set();
+    for (const r of selectedRows) {
+      const start = r * analyzeResult.patchesPerRow;
+      const end = Math.min(start + analyzeResult.patchesPerRow, analyzeResult.totalPatches);
+      for (let i = start; i < end; i++) expectedIndices.add(i);
     }
-    iccBuf=buildDeviceLink({inputChannels:3,outputChannels:3,clutPoints:gp,clutData:cl.array,description:`P95=${p95.toFixed(2)}`});
 
-    pb.style.width='100%';pt.textContent='Done!';
-    document.getElementById('statP').textContent=uAll.length;
-    document.getElementById('statA').textContent=pairs.length;
-    document.getElementById('statMed').textContent=`ΔE ${med.toFixed(2)}`;
-    document.getElementById('statP95').textContent=`ΔE ${p95.toFixed(2)}`;
+    // Match L → U by CMYK, only within selected rows
+    const pairs = [];
+    const lm = new Map();
+    for (const p of lPatches) { const k = p.cmyk.join(','); if (!lm.has(k)) lm.set(k, []); lm.get(k).push(p); }
+    for (const idx of expectedIndices) {
+      const pu = uPatches[idx];
+      const k = pu.cmyk.join(',');
+      const m = lm.get(k);
+      if (m && m.length > 0) { pairs.push({ u: pu, l: m[0] }); m.shift(); }
+    }
+
+    if (pairs.length < 5) throw new Error(`Only ${pairs.length} matched pairs in selected rows, need ≥5`);
+
+    pt.textContent = `Running frozen ResNet...`; pb.style.width = '35%';
+
+    // Get anchor frozen c-values from cached frozenCvals
+    const anchorFrozen = pairs.map(p => {
+      const idx = uPatches.indexOf(p.u);
+      return frozenCvals[idx];
+    });
+
+    const allDeltaC = pairs.map(p => {
+      const c = new Array(RANK).fill(0);
+      for (let w = 0; w < 36; w++) { const d = p.l.spectra[w] - p.u.spectra[w]; for (let k = 0; k < RANK; k++) c[k] += d * V[k][w]; }
+      return c;
+    });
+
+    pt.textContent = 'Fitting Ridge(5→5) residual...'; pb.style.width = '55%';
+    const delta = allDeltaC.map((c, i) => c.map((v, k) => v - anchorFrozen[i][k]));
+    const rm = ridgeFit(anchorFrozen, delta, 0.01);
+    const predLc = frozenCvals.map(c => {
+      const pd = new Array(RANK).fill(0);
+      for (let j = 0; j < RANK; j++) { if (c[j] === 0) continue; for (let k = 0; k < RANK; k++) pd[k] += c[j] * rm.weights[j][k]; }
+      return c.map((v, k) => v + pd[k]);
+    });
+
+    function clamp(v) { return Math.max(0, Math.min(1, v)); }
+    function recL(u, c) { const p = new Float64Array(36); for (let w = 0; w < 36; w++) { let d = 0; for (let k = 0; k < RANK; k++) d += c[k] * V[k][w]; p[w] = clamp(u[w] + d); } return p; }
+
+    pt.textContent = 'Computing Lab & ΔE00...'; pb.style.width = '70%';
+    const predLab = predLc.map((c, i) => toLab(recL(uPatches[i].spectra, c)));
+    const actLab = pairs.map(p => toLab(p.l.spectra));
+    const matchedU = pairs.map(p => uPatches.indexOf(p.u));
+
+    const de = [];
+    for (let i = 0; i < pairs.length; i++) { const pi = matchedU[i]; if (pi < 0) continue; de.push(deltaE00(predLab[pi][0], predLab[pi][1], predLab[pi][2], actLab[i][0], actLab[i][1], actLab[i][2])); }
+    de.sort((a, b) => a - b);
+    const med = de.length ? de[Math.floor(de.length / 2)] : 0, p95 = de.length ? de[Math.floor(de.length * .95)] : 0;
+
+    pt.textContent = 'Building ICC profile...'; pb.style.width = '85%';
+    const gp = parseInt(document.getElementById('clutSize').value);
+    const uLab = uPatches.map(p => toLab(p.spectra));
+    const cl = allocateCLUT(3, 3, gp);
+    for (let i = 0; i < gp; i++) for (let j = 0; j < gp; j++) for (let k = 0; k < gp; k++) {
+      const Lt = 100 * i / (gp - 1), at = -128 + 255 * j / (gp - 1), bt = -128 + 255 * k / (gp - 1);
+      let bD = Infinity, bI = 0; for (let pi = 0; pi < uLab.length; pi++) { const d = Math.hypot(uLab[pi][0] - Lt, uLab[pi][1] - at, uLab[pi][2] - bt); if (d < bD) { bD = d; bI = pi; } }
+      cl.setter([i, j, k], labToLab8(predLab[bI][0], predLab[bI][1], predLab[bI][2]));
+    }
+    iccBuf = buildDeviceLink({ inputChannels: 3, outputChannels: 3, clutPoints: gp, clutData: cl.array, description: `P95=${p95.toFixed(2)}` });
+
+    pb.style.width = '100%'; pt.textContent = 'Done!';
+    document.getElementById('statP').textContent = uPatches.length;
+    document.getElementById('statA').textContent = pairs.length;
+    document.getElementById('statMed').textContent = `ΔE ${med.toFixed(2)}`;
+    document.getElementById('statP95').textContent = `ΔE ${p95.toFixed(2)}`;
     ra.classList.remove('hidden');
-    setTimeout(()=>{pa.classList.add('hidden');btn.disabled=false;document.getElementById('buildBtn').disabled=!(u.file&&l.file);},500);
-  } catch(e){pt.textContent='Error: '+e.message;pt.classList.add('text-red-600');btn.disabled=false;console.error(e)}
+    setTimeout(() => { pa.classList.add('hidden'); btn.disabled = false; }, 500);
+  } catch (e) { pt.textContent = 'Error: ' + e.message; pt.classList.add('text-red-600'); btn.disabled = false; console.error(e); }
 };
 
-document.getElementById('dlBtn').onclick=()=>{
-  if(iccBuf){const b=new Blob([iccBuf],{type:'application/vnd.iccprofile'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download='lamination-devicelink.icc';a.click();URL.revokeObjectURL(u)}
+document.getElementById('dlBtn').onclick = () => {
+  if (iccBuf) { const b = new Blob([iccBuf], { type: 'application/vnd.iccprofile' }); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href = u; a.download = 'lamination-devicelink.icc'; a.click(); URL.revokeObjectURL(u); }
 };
 
 // ---- import helpers from app bundle ----
 import { spectralToXYZ, xyzToLab, deltaE00, ridgeFit, buildDeviceLink, allocateCLUT, labToLab8 } from '/dist/app.js';
-function toLab(s){const[X,Y,Z]=spectralToXYZ(Array.from(s));return xyzToLab(X,Y,Z)}
+function toLab(s) { const [X, Y, Z] = spectralToXYZ(Array.from(s)); return xyzToLab(X, Y, Z); }
 </script>
 </body>
 </html>

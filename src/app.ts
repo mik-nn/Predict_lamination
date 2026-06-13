@@ -1,18 +1,36 @@
 // Lamination DeviceLink App — browser entry point
 // Loads frozen ResNet model, fits Ridge adapter, builds ICC DeviceLink
 
-import * as tf from '@tensorflow/tfjs';
+// @tensorflow/globalThis.tfjs is loaded as a global via CDN (<script src="...">)
+// We reference it via globalThis.globalThis.tf throughout this module.
 import { buildDeviceLink, allocateCLUT, labToLab8 } from './icc-writer.ts';
 import { parseCgatsText, parseCGATS, extractSpectralData } from './cgats-parser.ts';
 import { spectralToXYZ, xyzToLab, deltaE00 } from './color-math.ts';
 import { ridgeFit, ridgePredict } from './ridge.ts';
 import type { Patch } from './types.ts';
 
+import { computeRows, rowDiversityScores, generateSubsetCGATS, verifySubsetMatch } from './strip-matcher.ts';
+
 // Re-export for browser bundle consumers
 export { buildDeviceLink, allocateCLUT, labToLab8, downloadICC };
-export { parseCgatsText, parseCGATS, extractSpectralData };
+export { parseCgatsText, parseCGATS, extractSpectralData, computeRows, rowDiversityScores, generateSubsetCGATS, verifySubsetMatch };
 export { spectralToXYZ, xyzToLab, deltaE00 };
 export { ridgeFit, ridgePredict };
+
+// Module-level cache for analyzeRows → processDeviceLinkWithRows
+let _cache: {
+  uPatches: Patch[];
+  allFrozenOut: number[][];
+  allDeltaC: number[][];
+  normAll: number[][];
+  uLab: [number, number, number][];
+  predictedLab: [number, number, number][];
+  predictedLc: number[][];
+} | null = null;
+
+export function clearCache(): void {
+  _cache = null;
+}
 
 // ---- Baked-in params (from reference dataset R2_11-4-23) ----
 // These will be pre-computed and embedded at build time
@@ -87,7 +105,7 @@ export async function processDeviceLink(
   options: {
     clutPoints?: number;
     iccVersion?: 'v2' | 'v4';
-    model?: tf.GraphModel | tf.LayersModel;
+    model?: globalThis.tf.GraphModel | globalThis.tf.LayersModel;
   } = {}
 ): Promise<{ buffer: ArrayBuffer; stats: any }> {
   if (!BAKED) throw new Error("Baked params not loaded. Call loadBakedParams() first.");
@@ -116,14 +134,14 @@ export async function processDeviceLink(
   let model = options.model;
   if (!model) throw new Error("No model provided. Load TF.js model first.");
 
-  const allT = tf.tensor2d(normAll);
-  const allPred = model.predict(allT) as tf.Tensor;
+  const allT = globalThis.tf.tensor2d(normAll);
+  const allPred = model.predict(allT) as globalThis.tf.Tensor;
   const allFrozenOut = (await allPred.array() as number[][])
     .map(row => row.map((v, k) => v * ys[k] + ym[k]));
   allT.dispose(); allPred.dispose();
 
-  const anchorT = tf.tensor2d(normAnchor);
-  const anchorPred = model.predict(anchorT) as tf.Tensor;
+  const anchorT = globalThis.tf.tensor2d(normAnchor);
+  const anchorPred = model.predict(anchorT) as globalThis.tf.Tensor;
   const anchorFrozenOut = (await anchorPred.array() as number[][])
     .map(row => row.map((v, k) => v * ys[k] + ym[k]));
   anchorT.dispose(); anchorPred.dispose();
@@ -235,6 +253,58 @@ export async function processDeviceLink(
   });
 
   return { buffer, stats };
+}
+
+// ---- Step-by-step workflow helpers ----
+
+export interface AnalyzeRowsResult {
+  totalPatches: number;
+  patchesPerRow: number;
+  rows: { index: number; patchCount: number; diversity: number; isRecommended: boolean }[];
+}
+
+export async function analyzeRows(
+  uText: string,
+  totalRows: number,
+  model: globalThis.tf.LayersModel
+): Promise<{
+  result: AnalyzeRowsResult;
+  uPatches: Patch[];
+  frozenCvals: number[][];
+}> {
+  if (!BAKED) throw new Error("Baked params not loaded. Call loadBakedParams() first.");
+  const { xm, xs, ym, ys, V } = BAKED;
+  const RANK = 5;
+
+  const uPatches = parseCgatsText(uText);
+  const totalPatches = uPatches.length;
+
+  const allFeatures = uPatches.map(p => getFeat(p));
+  const normAll = allFeatures.map(r => r.map((v, j) => (v - xm[j]) / xs[j]));
+
+  const t = globalThis.tf.tensor2d(normAll);
+  const pred = model.predict(t) as globalThis.tf.Tensor;
+  const arr = await pred.array() as number[][];
+  t.dispose(); pred.dispose();
+
+  const frozenCvals = arr.map(row => row.map((v, k) => v * ys[k] + ym[k]));
+
+  const { rows, patchesPerRow } = computeRows(totalPatches, totalRows);
+  const diversity = rowDiversityScores(frozenCvals, patchesPerRow, totalPatches, 1);
+
+  const allPatchesPerRow = Math.ceil(totalPatches / totalRows);
+  const result: AnalyzeRowsResult = {
+    totalPatches,
+    patchesPerRow: allPatchesPerRow,
+    rows: diversity.map(r => ({
+      index: r.rowIndex,
+      patchCount: r.patchCount,
+      diversity: r.diversity,
+      isRecommended: r.isRecommended,
+    })),
+  };
+
+  return { result, uPatches, frozenCvals };
 }
 
 

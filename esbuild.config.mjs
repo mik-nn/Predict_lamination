@@ -9,7 +9,6 @@ await esbuild.build({
   target: 'es2020',
   sourcemap: true,
   minify: true,
-  external: ['@tensorflow/tfjs'],
 });
 
 console.log('→ public/dist/app.js');

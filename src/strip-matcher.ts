@@ -1,5 +1,6 @@
 // Strip matching & row recommendation for lamination DeviceLink
 // CGATS parsing + row boundary computation + c-value diversity scoring
+import type { Patch } from './types.ts';
 
 export interface CGATSEntry {
   [key: string]: number;
@@ -192,4 +193,118 @@ export function rowDiversityScores(
   }
 
   return results;
+}
+
+// Generate a valid CGATS file containing only patches from specified rows
+export function generateSubsetCGATS(
+  originalText: string,
+  rowIndices: number[],
+  patchesPerRow: number,
+  totalPatches: number
+): string {
+  const lines = originalText.split(/\r?\n/);
+
+  // Find section boundaries
+  let dataStart = -1;
+  let dataEnd = -1;
+  let numberSetsIdx = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (t === 'BEGIN_DATA') dataStart = i;
+    if (t === 'END_DATA' && dataStart !== -1) { dataEnd = i; break; }
+    if (/^NUMBER_OF_SETS\b/.test(t)) numberSetsIdx = i;
+  }
+
+  if (dataStart === -1 || dataEnd === -1) {
+    throw new Error('Could not find BEGIN_DATA / END_DATA in CGATS file');
+  }
+
+  // Collect selected patch indices
+  const selectedIndices = new Set<number>();
+  for (const r of rowIndices) {
+    const indices = getPatchIndicesInRow(r, patchesPerRow, totalPatches);
+    for (const idx of indices) selectedIndices.add(idx);
+  }
+
+  // Reconstruct CGATS
+  const out: string[] = [];
+  for (let i = 0; i < dataStart; i++) {
+    if (i === numberSetsIdx) {
+      out.push(`NUMBER_OF_SETS\t${selectedIndices.size}`);
+    } else {
+      out.push(lines[i]);
+    }
+  }
+
+  out.push('BEGIN_DATA');
+  let dataRow = 0;
+  for (let i = dataStart + 1; i < dataEnd; i++) {
+    const line = lines[i].trim();
+    if (line.length === 0) continue;
+    if (selectedIndices.has(dataRow)) {
+      out.push(lines[i]);
+    }
+    dataRow++;
+  }
+  out.push('END_DATA');
+
+  for (let i = dataEnd + 1; i < lines.length; i++) {
+    out.push(lines[i]);
+  }
+
+  return out.join('\n');
+}
+
+export interface VerifyResult {
+  matched: number;
+  expected: number;
+  missing: { sampleId: string; cmyk: number[] }[];
+  extra: { sampleId: string; cmyk: number[] }[];
+  ok: boolean;
+}
+
+// Verify that laminated patches match expected rows by CMYK
+export function verifySubsetMatch(
+  uPatches: Patch[],
+  lPatches: Patch[],
+  expectedRowIndices: number[],
+  patchesPerRow: number
+): VerifyResult {
+  // Build expected CMYK multiset from U patches in selected rows
+  const expectedCMYKeys = new Map<string, number>();
+  for (const r of expectedRowIndices) {
+    const indices = getPatchIndicesInRow(r, patchesPerRow, uPatches.length);
+    for (const idx of indices) {
+      const k = uPatches[idx].cmyk.join(',');
+      expectedCMYKeys.set(k, (expectedCMYKeys.get(k) ?? 0) + 1);
+    }
+  }
+
+  const remaining = new Map(expectedCMYKeys);
+  const missing: { sampleId: string; cmyk: number[] }[] = [];
+  const extra: { sampleId: string; cmyk: number[] }[] = [];
+  let matched = 0;
+
+  for (const p of lPatches) {
+    const k = p.cmyk.join(',');
+    const remainingCount = remaining.get(k) ?? 0;
+    if (remainingCount > 0) {
+      remaining.set(k, remainingCount - 1);
+      matched++;
+    } else {
+      extra.push({ sampleId: p.sampleId, cmyk: Array.from(p.cmyk) });
+    }
+  }
+
+  for (const [k, count] of remaining) {
+    if (count > 0) {
+      missing.push({ sampleId: '', cmyk: k.split(',').map(Number) });
+    }
+  }
+
+  const expected = lPatches.length;
+  const ok = extra.length === 0 && matched === lPatches.length;
+
+  return { matched, expected, missing, extra, ok };
 }

@@ -35,6 +35,28 @@ Predict laminated spectra from unlaminated spectra using 4 paired CGATS datasets
 | D-optimal + OLS (N=200) | 2.6–3.6 | Anchor selection doesn't help much |
 | PCA + OLS / RF / GPR / AE | 3–22 | All rejected |
 
+## Web App (Browser-Based ICC Builder)
+
+A browser-only web app that builds Lab→Lab DeviceLink ICC profiles from CGATS files.
+All ML runs client-side via TF.js WebGL — no server GPU needed.
+
+### Workflow (3 Steps)
+
+1. **Upload & Analyze** — upload full unlaminated CGATS, enter strip count → auto-analysis recommends most informative 1–2 rows → download subset CGATS
+2. **Verify** — upload measured laminated CGATS (only those rows) → CMYK verification
+3. **Build ICC** — select CLUT resolution (17³/33³) → build & download .icc
+
+### Running Locally
+
+```bash
+node scripts/serve.cjs 8080
+# Open http://localhost:8080
+```
+
+### Pre-baked Model
+
+Pre-trained on R2_11-4-23 (1617 pairs, P95=1.09) — served from `public/model/` + `public/baked-params.json`. Available immediately to all users.
+
 ## Data
 
 - 4 paired CGATS files: `R2_11-4-23` (1617 patches), `R2_27-10-23`, `R2_13-02-24`, `R3_23-4-24` (1485 each)
@@ -54,27 +76,42 @@ Predict laminated spectra from unlaminated spectra using 4 paired CGATS datasets
 ## Project Structure
 
 ```
-scripts/
-├── resnet-transfer.ts      Transfer learning: ResNet + Ridge adapter (FINAL)
-├── resnet-test.ts          ResNet per-dataset (beats OLS on P95)
-├── resnet-filtered-cross.ts Outlier filter + cross-dataset ResNet
-├── honest-eval.ts          OLS 80/20 evaluation (baseline)
-├── dopt-rf.ts              D-optimal anchor selection + Random Forest
-├── gpr-test.ts             Gaussian Process Regression
-├── autoencoder-test.ts     Autoencoder attempt
-├── svd-analysis.ts         SVD decomposition analysis
-├── tail-analysis.ts        Worst-patch identification
-├── model-comparison.ts     All predictors benchmark
-├── filter-dark.ts          Dark-patch filtering test
-├── sg-exclude-combined.ts  Savitzky-Golay smoothing test
-├── neugebauer-*.ts         Neugebauer model tests
-├── yule-nielsen-check.ts   Yule-Nielsen model
-└── cross-validation.ts     Cross-dataset evaluation
-src/
-├── cgats-parser.ts         CGATS.17 parser
-├── color-math.ts           Spectral→XYZ→Lab→ΔE00
-├── types.ts                TypeScript types
-└── anchor-strategies/      Anchor selection strategies
+scripts/                          Research experiments (TypeScript/Node)
+├── resnet-transfer.ts            Transfer learning: ResNet + Ridge adapter (FINAL)
+├── resnet-test.ts                ResNet per-dataset
+├── resnet-filtered-cross.ts      Outlier filter + cross-dataset ResNet
+├── honest-eval.ts                OLS 80/20 evaluation (baseline)
+├── dopt-rf.ts                    D-optimal anchor selection + Random Forest
+├── gpr-test.ts                   Gaussian Process Regression
+├── autoencoder-test.ts           Autoencoder attempt
+├── svd-analysis.ts               SVD decomposition analysis
+├── tail-analysis.ts              Worst-patch identification
+├── model-comparison.ts           All predictors benchmark
+├── filter-dark.ts                Dark-patch filtering test
+├── export-baked-params.ts        Export frozen model + SVD + norms → public/
+├── sg-exclude-combined.ts        Savitzky-Golay smoothing test
+├── neugebauer-*.ts               Neugebauer model tests
+├── yule-nielsen-check.ts         Yule-Nielsen model
+└── cross-validation.ts           Cross-dataset evaluation
+src/                              Shared library (used by scripts + web app)
+├── cgats-parser.ts               CGATS.17 parser → Patch[]
+├── color-math.ts                 Spectral→XYZ→Lab→ΔE00 (CIEDE2000)
+├── icc-writer.ts                 Binary ICC v2 lut8Type DeviceLink builder
+├── strip-matcher.ts              Row computation + CGATS subset + verify
+├── ridge.ts                      Ridge regression (Cholesky, browser-safe)
+├── app.ts                        Browser entry point + all re-exports
+└── types.ts                      TypeScript types
+public/                           Web app (static, served by scripts/serve.cjs)
+├── index.html                    3-step wizard UI (Tailwind)
+├── tf.min.js                     Local TF.js (no CDN dependency)
+├── dist/app.js                   esbuild bundle (26.9kb)
+├── dist/app.js.map               Source map
+├── model/model.json + weights    Frozen ResNet model
+└── baked-params.json             SVD basis + normalization params
+workers/                          CloudFlare Workers (optional auth/storage)
+├── api.ts                        CloudFlare Worker entry
+├── wrangler.toml                 CloudFlare config
+└── d1-schema.sql                 D1 database schema
 ```
 
 ## GPU
