@@ -1,0 +1,1 @@
+Place test images here (PNG/JPEG). They appear in the app's file picker.

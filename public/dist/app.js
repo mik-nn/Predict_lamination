@@ -178,6 +178,45 @@ function allocateCLUT(inputChannels, outputChannels, clutPoints) {
     }
   };
 }
+function applyCLUT(labIn, clutData, clutPoints) {
+  const [L, a, b] = labIn;
+  const oc = 3;
+  const lf = L / 100 * (clutPoints - 1);
+  const af = (a + 128) / 255 * (clutPoints - 1);
+  const bf = (b + 128) / 255 * (clutPoints - 1);
+  const l0 = Math.max(0, Math.min(clutPoints - 2, Math.floor(lf)));
+  const a0 = Math.max(0, Math.min(clutPoints - 2, Math.floor(af)));
+  const b0 = Math.max(0, Math.min(clutPoints - 2, Math.floor(bf)));
+  const l1 = l0 + 1;
+  const a1 = a0 + 1;
+  const b1 = b0 + 1;
+  const ld = lf - l0;
+  const ad = af - a0;
+  const bd = bf - b0;
+  function grid(l, a2, b2) {
+    const idx = ((l * clutPoints + a2) * clutPoints + b2) * oc;
+    return [clutData[idx] / 255 * 100, clutData[idx + 1] - 128, clutData[idx + 2] - 128];
+  }
+  const v000 = grid(l0, a0, b0);
+  const v100 = grid(l1, a0, b0);
+  const v010 = grid(l0, a1, b0);
+  const v110 = grid(l1, a1, b0);
+  const v001 = grid(l0, a0, b1);
+  const v101 = grid(l1, a0, b1);
+  const v011 = grid(l0, a1, b1);
+  const v111 = grid(l1, a1, b1);
+  function lerp(c00, c10, c01, c11, dx, dy, dz) {
+    const c0 = c00[dz] * (1 - dx) + c10[dz] * dx;
+    const c1 = c01[dz] * (1 - dx) + c11[dz] * dx;
+    return c0 * (1 - dy) + c1 * dy;
+  }
+  const v0 = [v000, v100, v010, v110];
+  const v1 = [v001, v101, v011, v111];
+  const Lout = lerp(v000, v100, v010, v110, ld, ad, 0) * (1 - bd) + lerp(v001, v101, v011, v111, ld, ad, 0) * bd;
+  const aout = lerp(v000, v100, v010, v110, ld, ad, 1) * (1 - bd) + lerp(v001, v101, v011, v111, ld, ad, 1) * bd;
+  const bout = lerp(v000, v100, v010, v110, ld, ad, 2) * (1 - bd) + lerp(v001, v101, v011, v111, ld, ad, 2) * bd;
+  return [Lout, aout, bout];
+}
 
 // src/strip-matcher.ts
 function parseCGATS(text) {
@@ -455,6 +494,16 @@ function xyzToLab(x, y, z) {
   const b = 200 * (fy - fz);
   return [L, a, b];
 }
+function labToXyz(L, a, b) {
+  const fy = (L + 16) / 116;
+  const fx = a / 500 + fy;
+  const fz = fy - b / 200;
+  const fInv = (t) => {
+    const t3 = t * t * t;
+    return t3 > 8856e-6 ? t3 : (t - 16 / 116) / 7.787;
+  };
+  return [fInv(fx) * D50_XYZ[0], fInv(fy), fInv(fz) * D50_XYZ[2]];
+}
 var D50_SPECTRAL = [
   49.9755,
   54.6482,
@@ -623,6 +672,46 @@ function spectralToXYZ(reflectance) {
   Y /= NORM_D50;
   Z /= NORM_D50;
   return [X, Y, Z];
+}
+function linearToSrgb(c) {
+  return c <= 31308e-7 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+}
+function srgbToLinear(c) {
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+var SRGB_TO_XYZ_D50 = [
+  [0.4360747, 0.3850649, 0.1430804],
+  [0.2225045, 0.7168786, 0.0606169],
+  [0.0139322, 0.0971045, 0.7141733]
+];
+var XYZ_D50_TO_SRGB = [
+  [3.1338561, -1.6168667, -0.4906146],
+  [-0.9787684, 1.9161415, 0.033454],
+  [0.0719453, -0.2289914, 1.4052427]
+];
+function srgbToXyz(r, g, b) {
+  const rl = srgbToLinear(r / 255);
+  const gl = srgbToLinear(g / 255);
+  const bl = srgbToLinear(b / 255);
+  const X = SRGB_TO_XYZ_D50[0][0] * rl + SRGB_TO_XYZ_D50[0][1] * gl + SRGB_TO_XYZ_D50[0][2] * bl;
+  const Y = SRGB_TO_XYZ_D50[1][0] * rl + SRGB_TO_XYZ_D50[1][1] * gl + SRGB_TO_XYZ_D50[1][2] * bl;
+  const Z = SRGB_TO_XYZ_D50[2][0] * rl + SRGB_TO_XYZ_D50[2][1] * gl + SRGB_TO_XYZ_D50[2][2] * bl;
+  return [X, Y, Z];
+}
+function xyzToSrgb(X, Y, Z) {
+  const rl = XYZ_D50_TO_SRGB[0][0] * X + XYZ_D50_TO_SRGB[0][1] * Y + XYZ_D50_TO_SRGB[0][2] * Z;
+  const gl = XYZ_D50_TO_SRGB[1][0] * X + XYZ_D50_TO_SRGB[1][1] * Y + XYZ_D50_TO_SRGB[1][2] * Z;
+  const bl = XYZ_D50_TO_SRGB[2][0] * X + XYZ_D50_TO_SRGB[2][1] * Y + XYZ_D50_TO_SRGB[2][2] * Z;
+  const clamp2 = (v) => Math.max(0, Math.min(255, Math.round(linearToSrgb(v) * 255)));
+  return [clamp2(rl), clamp2(gl), clamp2(bl)];
+}
+function srgbToLab(r, g, b) {
+  const [X, Y, Z] = srgbToXyz(r, g, b);
+  return xyzToLab(X, Y, Z);
+}
+function labToSrgb(L, a, b) {
+  const [X, Y, Z] = labToXyz(L, a, b);
+  return xyzToSrgb(X, Y, Z);
 }
 function deltaE00(L1, a1, b1, L2, a2, b2) {
   const L_avg = (L1 + L2) / 2;
@@ -941,6 +1030,7 @@ async function analyzeRows(uText, totalRows, model) {
 export {
   allocateCLUT,
   analyzeRows,
+  applyCLUT,
   buildDeviceLink,
   clearCache,
   computeRows,
@@ -948,6 +1038,7 @@ export {
   extractSpectralData,
   generateSubsetCGATS,
   labToLab8,
+  labToSrgb,
   loadBakedParams,
   parseCGATS,
   parseCgatsText,
@@ -956,6 +1047,7 @@ export {
   ridgePredict,
   rowDiversityScores,
   spectralToXYZ,
+  srgbToLab,
   verifySubsetMatch,
   xyzToLab
 };

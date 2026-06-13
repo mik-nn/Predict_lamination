@@ -130,6 +130,22 @@
           <div class="text-center p-3 bg-gray-50 rounded"><div id="statMed" class="text-2xl font-bold text-gray-800">-</div><div class="text-xs text-gray-500">Median ΔE</div></div>
           <div class="text-center p-3 bg-gray-50 rounded"><div id="statP95" class="text-2xl font-bold text-blue-600">-</div><div class="text-xs text-gray-500">P95 ΔE</div></div>
         </div>
+
+        <div id="previewArea" class="hidden mb-4 border-t pt-4">
+          <h4 class="font-medium text-gray-800 mb-3">Preview on test image</h4>
+          <div class="mb-3 flex items-center gap-3 flex-wrap">
+            <span class="text-sm text-gray-600">Load image:</span>
+            <input type="file" id="fileImg" accept="image/*" class="text-sm">
+            <button id="genTestBtn" class="px-3 py-1 bg-gray-200 text-sm rounded hover:bg-gray-300">Generate test pattern</button>
+            <span id="previewStatus" class="text-xs text-gray-400"></span>
+          </div>
+          <div class="relative border rounded overflow-hidden bg-gray-100" style="min-height:100px">
+            <canvas id="previewCanvas" class="w-full" style="max-height:500px;image-rendering:pixelated"></canvas>
+            <div id="colorInfo" class="absolute bottom-2 left-2 bg-black/80 text-white text-xs p-2 rounded pointer-events-none hidden font-mono leading-relaxed min-w-[280px]"></div>
+          </div>
+          <p class="text-xs text-gray-400 mt-1">← Original &nbsp;|&nbsp; Laminated → &nbsp;· Hover for color values</p>
+        </div>
+
         <button id="dlBtn" class="px-6 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700">Download .icc</button>
       </div>
     </div>
@@ -148,6 +164,8 @@ let selectedRows = [];
 let subsetText = null;
 let lPatches = null;
 let iccBuf = null;
+let _clutData = null, _clutPoints = 17;
+let _previewOrigData = null;
 
 // ---- step navigation ----
 function goToStep(n) {
@@ -442,12 +460,14 @@ document.getElementById('buildBtn').onclick = async () => {
       cl.setter([i, j, k], labToLab8(predLab[bI][0], predLab[bI][1], predLab[bI][2]));
     }
     iccBuf = buildDeviceLink({ inputChannels: 3, outputChannels: 3, clutPoints: gp, clutData: cl.array, description: `P95=${p95.toFixed(2)}` });
+    _clutData = cl.array; _clutPoints = gp;
 
     pb.style.width = '100%'; pt.textContent = 'Done!';
     document.getElementById('statP').textContent = uPatches.length;
     document.getElementById('statA').textContent = pairs.length;
     document.getElementById('statMed').textContent = `ΔE ${med.toFixed(2)}`;
     document.getElementById('statP95').textContent = `ΔE ${p95.toFixed(2)}`;
+    document.getElementById('previewArea').classList.remove('hidden');
     ra.classList.remove('hidden');
     setTimeout(() => { pa.classList.add('hidden'); btn.disabled = false; }, 500);
   } catch (e) { pt.textContent = 'Error: ' + e.message; pt.classList.add('text-red-600'); btn.disabled = false; console.error(e); }
@@ -457,8 +477,145 @@ document.getElementById('dlBtn').onclick = () => {
   if (iccBuf) { const b = new Blob([iccBuf], { type: 'application/vnd.iccprofile' }); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href = u; a.download = 'lamination-devicelink.icc'; a.click(); URL.revokeObjectURL(u); }
 };
 
+// ---- Preview: image processing ----
+function processRightHalf() {
+  const canvas = document.getElementById('previewCanvas');
+  const status = document.getElementById('previewStatus');
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  if (w === 0 || h === 0) return;
+
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const data = imageData.data;
+  if (!_previewOrigData) _previewOrigData = new Uint8ClampedArray(data);
+
+  const mid = Math.floor(w / 2);
+  status.textContent = 'Processing...';
+
+  const t0 = performance.now();
+  for (let y = 0; y < h; y++) {
+    for (let x = mid; x < w; x++) {
+      const idx = (y * w + x) * 4;
+      const [L, av, bv] = srgbToLab(data[idx], data[idx+1], data[idx+2]);
+      const [L2, a2, b2_v] = applyCLUT([L, av, bv], _clutData, _clutPoints);
+      const [r2, g2, b2] = labToSrgb(L2, a2, b2_v);
+      data[idx] = r2; data[idx+1] = g2; data[idx+2] = b2;
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+  const ms = (performance.now() - t0).toFixed(0);
+  status.textContent = `Processed ${w}×${h} in ${ms}ms (right half only)`;
+}
+
+async function loadImageToCanvas(img) {
+  const canvas = document.getElementById('previewCanvas');
+  const MAX_W = 800;
+  const w = Math.min(img.naturalWidth, MAX_W);
+  const h = Math.round(img.naturalHeight * (w / img.naturalWidth));
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, w, h);
+  _previewOrigData = ctx.getImageData(0, 0, w, h).data;
+  processRightHalf();
+}
+
+// Generate test pattern (color ramps + gray steps + color patches)
+function generateTestPattern() {
+  if (!_clutData) { document.getElementById('previewStatus').textContent = 'Build ICC first!'; return; }
+  const canvas = document.getElementById('previewCanvas');
+  const W = 800, H = 300;
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  // Gray gradient background
+  const grad = ctx.createLinearGradient(0, 0, W, 0);
+  grad.addColorStop(0, '#000'); grad.addColorStop(1, '#fff');
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
+
+  // Cyan-magenta-yellow stripes
+  const stripeW = W / 6;
+  const colors = ['#0ff','#f0f','#ff0','#f00','#0f0','#00f'];
+  for (let i = 0; i < 6; i++) {
+    ctx.fillStyle = colors[i];
+    ctx.globalAlpha = 0.5;
+    ctx.fillRect(i * stripeW, 0, stripeW, H);
+  }
+  ctx.globalAlpha = 1;
+
+  // Color checker squares at bottom
+  const checkerColors = [
+    '#ffffff','#c8c8c8','#808080','#404040','#000000',
+    '#003380','#ff6b6b','#98d8c8','#f7d84a','#9acd32',
+    '#ff8c00','#8b4513','#6a0dad','#ff69b4','#00ced1',
+  ];
+  const sq = Math.floor(W / checkerColors.length);
+  for (let i = 0; i < checkerColors.length; i++) {
+    ctx.fillStyle = checkerColors[i];
+    ctx.fillRect(i * sq, H - 50, sq - 1, 49);
+  }
+
+  _previewOrigData = ctx.getImageData(0, 0, W, H).data;
+  processRightHalf();
+}
+
+// Load image file
+document.getElementById('fileImg').onchange = e => {
+  if (!_clutData) { document.getElementById('previewStatus').textContent = 'Build ICC first!'; return; }
+  const f = e.target.files[0];
+  if (!f) return;
+  const img = new Image();
+  img.onload = () => loadImageToCanvas(img);
+  img.src = URL.createObjectURL(f);
+};
+
+document.getElementById('genTestBtn').onclick = generateTestPattern;
+
+// ---- Preview: color info on hover ----
+document.getElementById('previewCanvas').onmousemove = e => {
+  const canvas = document.getElementById('previewCanvas');
+  const info = document.getElementById('colorInfo');
+  const rect = canvas.getBoundingClientRect();
+  const sx = canvas.width / rect.width;
+  const sy = canvas.height / rect.height;
+  const mx = Math.floor((e.clientX - rect.left) * sx);
+  const my = Math.floor((e.clientY - rect.top) * sy);
+
+  if (mx < 0 || mx >= canvas.width || my < 0 || my >= canvas.height || !_previewOrigData) {
+    info.classList.add('hidden'); return;
+  }
+
+  const idx = (my * canvas.width + mx) * 4;
+  const canvasData = canvas.getContext('2d').getImageData(mx, my, 1, 1).data;
+
+  // Original pixel (from cache)
+  const or = _previewOrigData[idx], og = _previewOrigData[idx+1], ob = _previewOrigData[idx+2];
+  const [oL, oa, ob_v] = srgbToLab(or, og, ob);
+
+  // Processed pixel (from canvas)
+  const pr = canvasData[0], pg = canvasData[1], pb = canvasData[2];
+  const isProcessed = mx >= Math.floor(canvas.width / 2);
+
+  if (isProcessed) {
+    const [pL, pa, pb_val] = srgbToLab(pr, pg, pb);
+    const de = deltaE00(oL, oa, ob_v, pL, pa, pb_val);
+    info.innerHTML = `<b>(${mx},${my})</b>
+Orig: RGB(${or},${og},${ob}) &nbsp;Lab(${oL.toFixed(1)},${oa.toFixed(1)},${ob_v.toFixed(1)})
+Lam:  RGB(${pr},${pg},${pb}) &nbsp;Lab(${pL.toFixed(1)},${pa.toFixed(1)},${pb_val.toFixed(1)})
+<b>ΔE00 = ${de.toFixed(2)}</b>`;
+  } else {
+    info.innerHTML = `<b>(${mx},${my})</b>
+Orig: RGB(${or},${og},${ob}) &nbsp;Lab(${oL.toFixed(1)},${oa.toFixed(1)},${ob_v.toFixed(1)})
+<i>Move cursor to right half for lamination comparison</i>`;
+  }
+  info.classList.remove('hidden');
+};
+
+document.getElementById('previewCanvas').onmouseleave = () => {
+  document.getElementById('colorInfo').classList.add('hidden');
+};
+
 // ---- import helpers from app bundle ----
-import { spectralToXYZ, xyzToLab, deltaE00, ridgeFit, buildDeviceLink, allocateCLUT, labToLab8 } from '/dist/app.js';
+import { spectralToXYZ, xyzToLab, deltaE00, ridgeFit, buildDeviceLink, allocateCLUT, labToLab8, srgbToLab, labToSrgb, applyCLUT } from '/dist/app.js';
 function toLab(s) { const [X, Y, Z] = spectralToXYZ(Array.from(s)); return xyzToLab(X, Y, Z); }
 </script>
 </body>

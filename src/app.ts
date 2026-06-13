@@ -14,8 +14,9 @@ import { computeRows, rowDiversityScores, generateSubsetCGATS, verifySubsetMatch
 // Re-export for browser bundle consumers
 export { buildDeviceLink, allocateCLUT, labToLab8, downloadICC };
 export { parseCgatsText, parseCGATS, extractSpectralData, computeRows, rowDiversityScores, generateSubsetCGATS, verifySubsetMatch };
-export { spectralToXYZ, xyzToLab, deltaE00 };
+export { spectralToXYZ, xyzToLab, deltaE00, srgbToLab, labToSrgb } from './color-math.ts';
 export { ridgeFit, ridgePredict };
+export { applyCLUT } from './icc-writer.ts';
 
 // Module-level cache for analyzeRows → processDeviceLinkWithRows
 let _cache: {

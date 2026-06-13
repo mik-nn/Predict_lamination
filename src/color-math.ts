@@ -83,6 +83,58 @@ export function spectralToXYZ(reflectance: number[]): [number, number, number] {
   return [X, Y, Z];
 }
 
+// ---- sRGB ↔ XYZ D50 conversions ----
+
+// sRGB gamma: linear → sRGB
+function linearToSrgb(c: number): number {
+  return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+}
+
+// sRGB gamma: sRGB → linear
+function srgbToLinear(c: number): number {
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+
+// sRGB → XYZ D50 (sRGB matrix adapted to D50 via Bradford)
+const SRGB_TO_XYZ_D50 = [
+  [0.4360747, 0.3850649, 0.1430804],
+  [0.2225045, 0.7168786, 0.0606169],
+  [0.0139322, 0.0971045, 0.7141733],
+];
+const XYZ_D50_TO_SRGB = [
+  [ 3.1338561, -1.6168667, -0.4906146],
+  [-0.9787684,  1.9161415,  0.0334540],
+  [ 0.0719453, -0.2289914,  1.4052427],
+];
+
+export function srgbToXyz(r: number, g: number, b: number): [number, number, number] {
+  const rl = srgbToLinear(r / 255);
+  const gl = srgbToLinear(g / 255);
+  const bl = srgbToLinear(b / 255);
+  const X = SRGB_TO_XYZ_D50[0][0] * rl + SRGB_TO_XYZ_D50[0][1] * gl + SRGB_TO_XYZ_D50[0][2] * bl;
+  const Y = SRGB_TO_XYZ_D50[1][0] * rl + SRGB_TO_XYZ_D50[1][1] * gl + SRGB_TO_XYZ_D50[1][2] * bl;
+  const Z = SRGB_TO_XYZ_D50[2][0] * rl + SRGB_TO_XYZ_D50[2][1] * gl + SRGB_TO_XYZ_D50[2][2] * bl;
+  return [X, Y, Z];
+}
+
+export function xyzToSrgb(X: number, Y: number, Z: number): [number, number, number] {
+  const rl = XYZ_D50_TO_SRGB[0][0] * X + XYZ_D50_TO_SRGB[0][1] * Y + XYZ_D50_TO_SRGB[0][2] * Z;
+  const gl = XYZ_D50_TO_SRGB[1][0] * X + XYZ_D50_TO_SRGB[1][1] * Y + XYZ_D50_TO_SRGB[1][2] * Z;
+  const bl = XYZ_D50_TO_SRGB[2][0] * X + XYZ_D50_TO_SRGB[2][1] * Y + XYZ_D50_TO_SRGB[2][2] * Z;
+  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(linearToSrgb(v) * 255)));
+  return [clamp(rl), clamp(gl), clamp(bl)];
+}
+
+export function srgbToLab(r: number, g: number, b: number): [number, number, number] {
+  const [X, Y, Z] = srgbToXyz(r, g, b);
+  return xyzToLab(X, Y, Z);
+}
+
+export function labToSrgb(L: number, a: number, b: number): [number, number, number] {
+  const [X, Y, Z] = labToXyz(L, a, b);
+  return xyzToSrgb(X, Y, Z);
+}
+
 // CIEDE2000
 export function deltaE00(L1: number, a1: number, b1: number, L2: number, a2: number, b2: number): number {
   const L_avg = (L1 + L2) / 2;

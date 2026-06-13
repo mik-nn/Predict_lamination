@@ -227,6 +227,68 @@ export function allocateCLUT(inputChannels: number, outputChannels: number, clut
   };
 }
 
+// ---- DeviceLink CLUT interpolation ----
+
+// Apply Lab→Lab DeviceLink CLUT via trilinear interpolation
+// labIn: [L, a, b] in standard Lab space (L 0-100, a/b -128..127)
+// clutData: Uint8Array from allocateCLUT (gp^3 × 3, Lab8 encoded)
+// clutPoints: grid size (17 or 33)
+// Returns: [L, a, b] after DeviceLink transform
+export function applyCLUT(
+  labIn: [number, number, number],
+  clutData: Uint8Array,
+  clutPoints: number
+): [number, number, number] {
+  const [L, a, b] = labIn;
+  const oc = 3;
+
+  // Normalize input to grid coordinates [0, gp-1]
+  const lf = (L / 100) * (clutPoints - 1);
+  const af = ((a + 128) / 255) * (clutPoints - 1);
+  const bf = ((b + 128) / 255) * (clutPoints - 1);
+
+  const l0 = Math.max(0, Math.min(clutPoints - 2, Math.floor(lf)));
+  const a0 = Math.max(0, Math.min(clutPoints - 2, Math.floor(af)));
+  const b0 = Math.max(0, Math.min(clutPoints - 2, Math.floor(bf)));
+
+  const l1 = l0 + 1;
+  const a1 = a0 + 1;
+  const b1 = b0 + 1;
+
+  const ld = lf - l0;
+  const ad = af - a0;
+  const bd = bf - b0;
+
+  function grid(l: number, a: number, b: number): [number, number, number] {
+    const idx = ((l * clutPoints + a) * clutPoints + b) * oc;
+    return [clutData[idx] / 255 * 100, clutData[idx + 1] - 128, clutData[idx + 2] - 128];
+  }
+
+  const v000 = grid(l0, a0, b0);
+  const v100 = grid(l1, a0, b0);
+  const v010 = grid(l0, a1, b0);
+  const v110 = grid(l1, a1, b0);
+  const v001 = grid(l0, a0, b1);
+  const v101 = grid(l1, a0, b1);
+  const v011 = grid(l0, a1, b1);
+  const v111 = grid(l1, a1, b1);
+
+  function lerp(c00: number[], c10: number[], c01: number[], c11: number[], dx: number, dy: number, dz: number): number {
+    const c0 = c00[dz] * (1 - dx) + c10[dz] * dx;
+    const c1 = c01[dz] * (1 - dx) + c11[dz] * dx;
+    return c0 * (1 - dy) + c1 * dy;
+  }
+
+  const v0 = [v000, v100, v010, v110];
+  const v1 = [v001, v101, v011, v111];
+
+  const Lout = lerp(v000, v100, v010, v110, ld, ad, 0) * (1 - bd) + lerp(v001, v101, v011, v111, ld, ad, 0) * bd;
+  const aout = lerp(v000, v100, v010, v110, ld, ad, 1) * (1 - bd) + lerp(v001, v101, v011, v111, ld, ad, 1) * bd;
+  const bout = lerp(v000, v100, v010, v110, ld, ad, 2) * (1 - bd) + lerp(v001, v101, v011, v111, ld, ad, 2) * bd;
+
+  return [Lout, aout, bout];
+}
+
 // Convert hex string to ArrayBuffer (for downloading)
 export function downloadICC(buffer: ArrayBuffer, filename: string) {
   const blob = new Blob([buffer], { type: 'application/vnd.iccprofile' });
