@@ -399,17 +399,6 @@ async function init() {
 }
 init();
 
-// ---- load image from url ----
-function loadImageFromUrl(url) {
-  if (!url) return;
-  document.getElementById('previewStatus').textContent = 'Loading...';
-  const img = new Image();
-  img.crossOrigin = 'anonymous';
-  img.onload = () => loadImageToProcessor(img);
-  img.onerror = () => document.getElementById('previewStatus').textContent = 'Failed to load image';
-  img.src = url;
-}
-
 // ---- load image list from server ----
 async function loadImageList() {
   try {
@@ -703,10 +692,29 @@ async function loadImageToProcessor(img) {
 document.getElementById('fileImg').onchange = e => {
   const f = e.target.files[0];
   if (!f) return;
+  if (!_clutData) {
+    document.getElementById('previewStatus').textContent = 'Build ICC first then load image';
+    return;
+  }
   const img = new Image();
   img.onload = () => loadImageToProcessor(img);
   img.src = URL.createObjectURL(f);
 };
+
+// Also handle dropdown load when no ICC yet
+function loadImageFromUrl(url) {
+  if (!url) return;
+  if (!_clutData) {
+    document.getElementById('previewStatus').textContent = 'Build ICC first';
+    return;
+  }
+  document.getElementById('previewStatus').textContent = 'Loading...';
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => loadImageToProcessor(img);
+  img.onerror = () => document.getElementById('previewStatus').textContent = 'Failed to load image';
+  img.src = url;
+}
 
 function clampPan(cw, ch) {
   const t = getZoomTransform(cw, ch);
