@@ -16,7 +16,7 @@ export { buildDeviceLink, allocateCLUT, labToLab8, downloadICC };
 export { parseCgatsText, parseCGATS, extractSpectralData, computeRows, rowDiversityScores, generateSubsetCGATS, verifySubsetMatch };
 export { spectralToXYZ, xyzToLab, deltaE00, srgbToLab, labToSrgb } from './color-math.ts';
 export { ridgeFit, ridgePredict };
-export { applyCLUT } from './icc-writer.ts';
+export { applyCLUT, lab8ToLab } from './icc-writer.ts';
 
 // Module-level cache for analyzeRows → processDeviceLinkWithRows
 let _cache: {

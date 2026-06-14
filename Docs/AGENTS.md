@@ -92,9 +92,46 @@ keep the main context window lean.
 - 2–4 related queries → `Explore`.
 - Many related queries with caveman-compressed return → `cavecrew-investigator`.
 
+### 4.5 Debugging UI issues with Playwright (mandatory)
+
+1. **Always use Playwright** when debugging any browser-side issue — never guess or reason from code alone.
+2. Write a script in `C:\Users\Mik_ML\AppData\Local\Temp\opencode\playwright-debug-*.js` and execute via:
+   ```
+   cd C:\Users\Mik_ML\.agents\skills\playwright
+   node run.js C:\Users\Mik_ML\AppData\Local\Temp\opencode\playwright-debug-*.js
+   ```
+3. Capture console logs (`page.on('console')`), page errors (`page.on('pageerror')`), screenshots, and canvas pixel data to verify behavior.
+4. Do NOT request screenshots from the user — extract the information programmatically.
+5. The working E2E workflow test is at `C:\Users\Mik_ML\AppData\Local\Temp\opencode\playwright-test-workflow.js` — reuse its pattern.
+
+
 ---
 
-## 5. Anti-patterns
+## 5. CMYK→Lab LUT & TIFF Support
+
+### 5.1 CMYK→Lab Pipeline
+
+The app converts CMYK TIFF images to Lab using a pre-computed 16⁴ LUT from the ISO Coated v2 ICC profile:
+
+1. **Build the LUT:** `node scripts/build-cmyk-lab-lut.cjs` reads the profile's A2B0 tag, extracts the identity matrix (40B), 4×256-entry input curves, the 16⁴×3 CLUT, and 3×256-entry output curves. The channel order is reversed (ICC stores K,Y,M,C → reordered to C,M,Y,K). Output: `public/cmyk-lab-lut.json` (~3.5 MB, 65536 grid points).
+2. **Browser lookup:** `window.cmykToLab8(c,m,y,k)` performs quadrilinear interpolation (16 corner samples) using the 4 input curves to map 8-bit device values to grid coordinates.
+3. **Heatmap-compatible processing:** `window.processLabImage(labArr, w, h)` takes a flat Float32Array of Lab values and generates print/lam/heat OffscreenCanvases identical to `processFullImage()`.
+
+### 5.2 TIFF Loading
+
+- **UTIF.js** (`public/utif.min.js`) decodes TIFF files. `window.loadTiffFromUrl(url)` auto-detects CMYK (4‑ch), RGB (3‑ch), or grayscale (1‑ch) and converts to Lab.
+- CMYK TIFFs require the LUT; RGB TIFFs use `srgbToLab()`.
+- TIFF files appear in the server dropdown (`/api/images` filtered for `.png|.jpg|.jpeg|.tif|.tiff`). File input `accept` remains PNG/JPEG/GIF/WebP only.
+
+### 5.3 Adding a New Test Image
+
+1. Place in `Data/Image/`.
+2. Restart the server; the file appears in the dropdown automatically.
+3. For CMYK TIFFs, verify with Playwright that `cmykToLab8()` produces sane Lab values (e.g., paper white ≈ L=99.6, a≈-0.5, b≈-0.5).
+
+---
+
+## 6. Anti-patterns
 
 - Spawning a subagent for a single-file lookup. Just use `Read`/`Grep`.
 - Letting a subagent commit on your behalf. Subagents return findings; the main thread

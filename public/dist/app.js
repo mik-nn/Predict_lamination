@@ -17,6 +17,9 @@ function labToLab8(L, a, b) {
     Math.round(Math.max(-128, Math.min(127, b)) + 128)
   ];
 }
+function lab8ToLab(l8, a8, b8) {
+  return [l8 / 255 * 100, a8 - 128, b8 - 128];
+}
 function identityLUT() {
   const lut = new Uint8Array(256);
   for (let i = 0; i < 256; i++) lut[i] = i;
@@ -1034,6 +1037,7 @@ export {
   deltaE00,
   extractSpectralData,
   generateSubsetCGATS,
+  lab8ToLab,
   labToLab8,
   labToSrgb,
   loadBakedParams,

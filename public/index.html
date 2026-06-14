@@ -6,6 +6,7 @@
 <title>Lamination DeviceLink Builder</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="/tf.min.js"></script>
+<script src="/utif.min.js"></script>
 <style>
   .drop-zone{transition:all .2s}
   .drop-zone.drag-over{border-color:#3b82f6;background:#eff6ff}
@@ -137,9 +138,10 @@
             <span class="text-sm text-gray-600">Image:</span>
             <select id="imgSelect" class="border rounded px-2 py-1 text-sm min-w-[160px]"></select>
             <span class="text-xs text-gray-400">or</span>
-            <input type="file" id="fileImg" accept="image/*" class="text-sm max-w-[200px]">
+            <input type="file" id="fileImg" accept="image/png,image/jpeg,image/gif,image/webp" class="text-sm max-w-[200px]">
             <span id="previewStatus" class="text-xs text-gray-400"></span>
             <span class="ml-auto flex items-center gap-1">
+              <button id="viewToggleBtn" class="px-2 py-1 text-xs rounded border font-medium" style="background:#e0e7ff;border-color:#818cf8;color:#3730a3">Error ΔE</button>
               <button id="zoomFitBtn" class="px-2 py-1 bg-gray-200 text-xs rounded hover:bg-gray-300">Fit</button>
               <button id="zoom100Btn" class="px-2 py-1 bg-gray-200 text-xs rounded hover:bg-gray-300">100%</button>
               <span id="zoomLabel" class="text-xs text-gray-500 w-12 text-right">fit</span>
@@ -151,6 +153,11 @@
             <div id="colorInfo" class="absolute bottom-2 left-2 bg-black/80 text-white text-xs p-2 rounded pointer-events-none hidden font-mono leading-relaxed min-w-[280px]"></div>
             <div id="labelPrint" class="absolute bottom-2 left-2 bg-green-700/70 text-white text-[10px] px-1.5 py-0.5 rounded pointer-events-none" style="display:none">PRINT</div>
             <div id="labelLam" class="absolute bottom-2 right-2 bg-orange-600/70 text-white text-[10px] px-1.5 py-0.5 rounded pointer-events-none" style="display:none">LAM</div>
+            <div id="heatLegend" class="absolute top-2 left-2 bg-black/70 text-white text-[10px] px-2 py-1.5 rounded pointer-events-none" style="display:none">
+              <div class="flex items-center gap-1 mb-1"><span>Error ΔE</span></div>
+              <div style="width:120px;height:10px;background:linear-gradient(to right,#00ff00,#80ff00,#ffff00,#ff8000,#ff0000);border-radius:2px"></div>
+              <div class="flex justify-between mt-0.5"><span>0</span><span>1</span><span>2</span><span>3</span><span>≥5</span></div>
+            </div>
             <div id="navigator" class="absolute top-2 right-2 bg-black/70 border border-white/30 rounded overflow-hidden" style="width:160px;height:107px;display:none">
               <canvas id="navCanvas" style="width:100%;height:100%"></canvas>
               <div id="navViewport" style="position:absolute;border:1.5px solid #f00;pointer-events:none;display:none"></div>
@@ -168,6 +175,10 @@
 <script type="module">
 import { parseCgatsText, computeRows, rowDiversityScores, generateSubsetCGATS, verifySubsetMatch } from '/dist/app.js';
 
+// ---- CMYK→Lab LUT (from ISO Coated v2 ICC) ----
+let _cmykLut = null;
+fetch('/cmyk-lab-lut.json').then(r => r.json()).then(lut => { _cmykLut = lut; console.log('CMYK→Lab LUT loaded'); })
+
 // ---- state ----
 let model = null, baked = null;
 let uFile = null, lFile = null;
@@ -177,14 +188,15 @@ let selectedRows = [];
 let subsetText = null;
 let lPatches = null;
 let iccBuf = null;
-let _clutData = null, _printClutData = null, _clutPoints = 17;
+let _clutData = null, _printClutData = null, _actualClutData = null, _heatmapValues = null, _clutPoints = 17;
 let _fullW = 0, _fullH = 0;
-let _printOffscreen = null, _lamOffscreen = null;
+let _printOffscreen = null, _lamOffscreen = null, _heatOffscreen = null;
 let _splitRatio = 0.5;
 let _isDraggingSplit = false;
 let _isDraggingCanvas = false, _dragStartX = 0, _dragStartY = 0, _dragStartPanX = 0, _dragStartPanY = 0;
-let _zoomFit = true, _zoom = 1; // _zoom=1 when fit, else zoom factor
+let _zoomFit = true, _zoom = 1;
 let _panX = 0, _panY = 0;
+let _viewMode = 'split'; // 'split' | 'heatmap'
 
 // ---- step navigation ----
 function goToStep(n) {
@@ -204,9 +216,11 @@ function goToStep(n) {
       label.className = 'ml-2 text-sm text-gray-400';
     }
     if (i < n) {
-      document.getElementById(`bar-${i}`).className = 'step-bar mx-3 h-0.5 w-16 bg-green-500';
+      const el = document.getElementById(`bar-${i}`);
+      if (el) el.className = 'step-bar mx-3 h-0.5 w-16 bg-green-500';
     } else {
-      document.getElementById(`bar-${i}`).className = 'step-bar mx-3 h-0.5 w-16 bg-gray-300';
+      const el = document.getElementById(`bar-${i}`);
+      if (el) el.className = 'step-bar mx-3 h-0.5 w-16 bg-gray-300';
     }
   }
   if (n === 3) {
@@ -494,27 +508,37 @@ document.getElementById('buildBtn').onclick = async () => {
     pt.textContent = 'Building ICC profile...'; pb.style.width = '85%';
     const gp = parseInt(document.getElementById('clutSize').value);
     const uLab = uPatches.map(p => toLab(p.spectra));
-    uPatches[0].cmyk; // unused, we use uLab for gamut
+    const lLab = lPatches.map(p => toLab(p.spectra));
     const cl = allocateCLUT(3, 3, gp);
     const printCl = allocateCLUT(3, 3, gp);
+    const actualCl = allocateCLUT(3, 3, gp);
+    const hmVals = new Float32Array(gp * gp * gp);
     const GAMUT_THRESHOLD = 40;
     for (let i = 0; i < gp; i++) for (let j = 0; j < gp; j++) for (let k = 0; k < gp; k++) {
       const Lt = 100 * i / (gp - 1), at = -128 + 255 * j / (gp - 1), bt = -128 + 255 * k / (gp - 1);
       let bD = Infinity, bI = 0; for (let pi = 0; pi < uLab.length; pi++) { const d = Math.hypot(uLab[pi][0] - Lt, uLab[pi][1] - at, uLab[pi][2] - bt); if (d < bD) { bD = d; bI = pi; } }
-      if (bD > GAMUT_THRESHOLD) {
-        // Out of printer gamut → identity (no simulation)
+      // Find nearest laminated patch (for actual CLUT)
+      let lD = Infinity, lI = 0; for (let pi = 0; pi < lLab.length; pi++) { const d = Math.hypot(lLab[pi][0] - Lt, lLab[pi][1] - at, lLab[pi][2] - bt); if (d < lD) { lD = d; lI = pi; } }
+      const idx = (i * gp + j) * gp + k;
+      if (bD > GAMUT_THRESHOLD || lD > GAMUT_THRESHOLD) {
         printCl.setter([i, j, k], labToLab8(Lt, at, bt));
         cl.setter([i, j, k], labToLab8(Lt, at, bt));
+        actualCl.setter([i, j, k], labToLab8(Lt, at, bt));
+        hmVals[idx] = -1;
       } else {
-        // Print simulation: nearest unlaminated patch Lab
         const [pL, pa, pb_v] = toLab(uPatches[bI].spectra);
         printCl.setter([i, j, k], labToLab8(pL, pa, pb_v));
-        // Laminated: predicted Lab after DeviceLink
-        cl.setter([i, j, k], labToLab8(predLab[bI][0], predLab[bI][1], predLab[bI][2]));
+        const predLam = labToLab8(predLab[bI][0], predLab[bI][1], predLab[bI][2]);
+        cl.setter([i, j, k], predLam);
+        const actualLam = labToLab8(lLab[lI][0], lLab[lI][1], lLab[lI][2]);
+        actualCl.setter([i, j, k], actualLam);
+        const [predL, predA, predB] = lab8ToLab(predLam[0], predLam[1], predLam[2]);
+        const [actL, actA, actB] = lab8ToLab(actualLam[0], actualLam[1], actualLam[2]);
+        hmVals[idx] = deltaE00(predL, predA, predB, actL, actA, actB);
       }
     }
     iccBuf = buildDeviceLink({ inputChannels: 3, outputChannels: 3, clutPoints: gp, clutData: cl.array, description: `P95=${p95.toFixed(2)}` });
-    _clutData = cl.array; _printClutData = printCl.array; _clutPoints = gp;
+    _clutData = cl.array; _printClutData = printCl.array; _actualClutData = actualCl.array; _heatmapValues = hmVals; _clutPoints = gp;
 
     pb.style.width = '100%'; pt.textContent = 'Done!';
     document.getElementById('statP').textContent = uPatches.length;
@@ -534,26 +558,165 @@ document.getElementById('dlBtn').onclick = () => {
 };
 
 // ---- Preview: image processing ----
+function heatmapColor(de) {
+  if (de < 0) return [136, 136, 136]; // no data gray
+  const t = Math.min(1, de / 5);
+  if (t < 0.5) {
+    const u = t / 0.5; // 0..1
+    return [Math.round(255 * u), 255, 0];
+  } else {
+    const u = (t - 0.5) / 0.5;
+    return [255, Math.round(255 * (1 - u)), 0];
+  }
+}
+
 function processFullImage(imgData) {
   const w = imgData.width, h = imgData.height;
   const src = imgData.data;
   const printArr = new Uint8ClampedArray(src.length);
   const lamArr = new Uint8ClampedArray(src.length);
+  const heatArr = new Uint8ClampedArray(src.length);
+  const gm1 = _clutPoints - 1;
   const t0 = performance.now();
   for (let i = 0; i < src.length; i += 4) {
     const [L, a, b] = srgbToLab(src[i], src[i+1], src[i+2]);
+    // Print
     const [Lp, ap, bp] = applyCLUT([L, a, b], _printClutData, _clutPoints);
     const [rp, gp, bp2] = labToSrgb(Lp, ap, bp);
     printArr[i] = rp; printArr[i+1] = gp; printArr[i+2] = bp2; printArr[i+3] = 255;
+    // Lam
     const [Ld, ad, bd] = applyCLUT([L, a, b], _clutData, _clutPoints);
     const [rd, gd, bd2] = labToSrgb(Ld, ad, bd);
     lamArr[i] = rd; lamArr[i+1] = gd; lamArr[i+2] = bd2; lamArr[i+3] = 255;
+    // Heatmap: trilinear interpolation of grid ΔE values
+    const lf = (L / 100) * gm1, af = ((a + 128) / 255) * gm1, bf = ((b + 128) / 255) * gm1;
+    const l0 = Math.max(0, Math.min(gm1 - 1, Math.floor(lf)));
+    const a0 = Math.max(0, Math.min(gm1 - 1, Math.floor(af)));
+    const b0 = Math.max(0, Math.min(gm1 - 1, Math.floor(bf)));
+    const l1 = l0 + 1, a1 = a0 + 1, b1 = b0 + 1;
+    const ld = lf - l0, ad_ = af - a0, bd_ = bf - b0;
+    function hv(li, ai, bi) {
+      const v = _heatmapValues[(li * _clutPoints + ai) * _clutPoints + bi];
+      return v < 0 ? 0 : v;
+    }
+    const v00 = hv(l0,a0,b0)*(1-bd_) + hv(l0,a0,b1)*bd_;
+    const v01 = hv(l0,a1,b0)*(1-bd_) + hv(l0,a1,b1)*bd_;
+    const v10 = hv(l1,a0,b0)*(1-bd_) + hv(l1,a0,b1)*bd_;
+    const v11 = hv(l1,a1,b0)*(1-bd_) + hv(l1,a1,b1)*bd_;
+    const de = (v00*(1-ad_) + v01*ad_)*(1-ld) + (v10*(1-ad_) + v11*ad_)*ld;
+    const [hr, hg, hb_] = heatmapColor(de);
+    heatArr[i] = hr; heatArr[i+1] = hg; heatArr[i+2] = hb_; heatArr[i+3] = 255;
   }
   _printOffscreen = new OffscreenCanvas(w, h);
   _printOffscreen.getContext('2d').putImageData(new ImageData(printArr, w, h), 0, 0);
   _lamOffscreen = new OffscreenCanvas(w, h);
   _lamOffscreen.getContext('2d').putImageData(new ImageData(lamArr, w, h), 0, 0);
+  _heatOffscreen = new OffscreenCanvas(w, h);
+  _heatOffscreen.getContext('2d').putImageData(new ImageData(heatArr, w, h), 0, 0);
   return performance.now() - t0;
+}
+
+// ---- CMYK→Lab via 16^4 LUT (quadrilinear interpolation) ----
+window.cmykToLab8 = function cmykToLab8(c, m, y, k) {
+  if (!_cmykLut) return [0, 0, 0];
+  const g = _cmykLut.gridPts;
+  const curves = _cmykLut.inputCurves;
+  const values = _cmykLut.values;
+  const gc = curves[0][c] / 65535 * (g-1), gm = curves[1][m] / 65535 * (g-1);
+  const gy = curves[2][y] / 65535 * (g-1), gk = curves[3][k] / 65535 * (g-1);
+  const c0 = Math.floor(gc), c1 = Math.min(c0+1, g-1);
+  const m0 = Math.floor(gm), m1 = Math.min(m0+1, g-1);
+  const y0 = Math.floor(gy), y1 = Math.min(y0+1, g-1);
+  const k0 = Math.floor(gk), k1 = Math.min(k0+1, g-1);
+  const cf = gc - c0, mf = gm - m0, yf = gy - y0, kf = gk - k0;
+  function gv(ci, mi, yi, ki) {
+    const idx = (((ki * g + yi) * g + mi) * g + ci) * 3;
+    return [values[idx], values[idx+1], values[idx+2]];
+  }
+  const lerp = (a, b, t) => a + (b-a)*t;
+  const lerpV = (a, b, t) => [lerp(a[0],b[0],t), lerp(a[1],b[1],t), lerp(a[2],b[2],t)];
+  const v0000 = gv(c0,m0,y0,k0), v0001 = gv(c0,m0,y0,k1);
+  const v0010 = gv(c0,m0,y1,k0), v0011 = gv(c0,m0,y1,k1);
+  const v0100 = gv(c0,m1,y0,k0), v0101 = gv(c0,m1,y0,k1);
+  const v0110 = gv(c0,m1,y1,k0), v0111 = gv(c0,m1,y1,k1);
+  const v1000 = gv(c1,m0,y0,k0), v1001 = gv(c1,m0,y0,k1);
+  const v1010 = gv(c1,m0,y1,k0), v1011 = gv(c1,m0,y1,k1);
+  const v1100 = gv(c1,m1,y0,k0), v1101 = gv(c1,m1,y0,k1);
+  const v1110 = gv(c1,m1,y1,k0), v1111 = gv(c1,m1,y1,k1);
+  const kL = [lerpV(v0000,v0001,kf), lerpV(v0010,v0011,kf), lerpV(v0100,v0101,kf), lerpV(v0110,v0111,kf),
+    lerpV(v1000,v1001,kf), lerpV(v1010,v1011,kf), lerpV(v1100,v1101,kf), lerpV(v1110,v1111,kf)];
+  const yL = [lerpV(kL[0],kL[1],yf), lerpV(kL[2],kL[3],yf), lerpV(kL[4],kL[5],yf), lerpV(kL[6],kL[7],yf)];
+  const mL = [lerpV(yL[0],yL[1],mf), lerpV(yL[2],yL[3],mf)];
+  return lerpV(mL[0],mL[1],cf);
+}
+
+// Process a pre-computed Lab image (from TIFF CMYK→Lab conversion)
+window.processLabImage = function processLabImage(labArr, w, h) {
+  const printArr = new Uint8ClampedArray(w * h * 4);
+  const lamArr = new Uint8ClampedArray(w * h * 4);
+  const heatArr = new Uint8ClampedArray(w * h * 4);
+  const gm1 = _clutPoints - 1;
+  for (let pi = 0; pi < w * h; pi++) {
+    const L = labArr[pi * 3], a = labArr[pi * 3 + 1], b = labArr[pi * 3 + 2];
+    const [Lp, ap, bp2] = applyCLUT([L, a, b], _printClutData, _clutPoints);
+    const [rp, gp, bp3] = labToSrgb(Lp, ap, bp2);
+    const i = pi * 4;
+    printArr[i] = rp; printArr[i+1] = gp; printArr[i+2] = bp3; printArr[i+3] = 255;
+    const [Ld, ad, bd2] = applyCLUT([L, a, b], _clutData, _clutPoints);
+    const [rd, gd, bd3] = labToSrgb(Ld, ad, bd2);
+    lamArr[i] = rd; lamArr[i+1] = gd; lamArr[i+2] = bd3; lamArr[i+3] = 255;
+    const lf = (L / 100) * gm1, af = ((a + 128) / 255) * gm1, bf = ((b + 128) / 255) * gm1;
+    const l0 = Math.max(0, Math.min(gm1-1, Math.floor(lf)));
+    const a0 = Math.max(0, Math.min(gm1-1, Math.floor(af)));
+    const b0 = Math.max(0, Math.min(gm1-1, Math.floor(bf)));
+    const l1 = l0 + 1, a1 = a0 + 1, b1 = b0 + 1;
+    const ld = lf - l0, ad_ = af - a0, bd_ = bf - b0;
+    const hv = (li, ai, bi) => { const v = _heatmapValues[(li*_clutPoints+ai)*_clutPoints+bi]; return v < 0 ? 0 : v; };
+    const v0 = hv(l0,a0,b0)*(1-bd_)+hv(l0,a0,b1)*bd_;
+    const v1 = hv(l0,a1,b0)*(1-bd_)+hv(l0,a1,b1)*bd_;
+    const v2 = hv(l1,a0,b0)*(1-bd_)+hv(l1,a0,b1)*bd_;
+    const v3 = hv(l1,a1,b0)*(1-bd_)+hv(l1,a1,b1)*bd_;
+    const de = (v0*(1-ad_)+v1*ad_)*(1-ld)+(v2*(1-ad_)+v3*ad_)*ld;
+    const [hr, hg, hb4] = heatmapColor(de);
+    heatArr[i] = hr; heatArr[i+1] = hg; heatArr[i+2] = hb4; heatArr[i+3] = 255;
+  }
+  _printOffscreen = new OffscreenCanvas(w, h);
+  _printOffscreen.getContext('2d').putImageData(new ImageData(printArr, w, h), 0, 0);
+  _lamOffscreen = new OffscreenCanvas(w, h);
+  _lamOffscreen.getContext('2d').putImageData(new ImageData(lamArr, w, h), 0, 0);
+  _heatOffscreen = new OffscreenCanvas(w, h);
+  _heatOffscreen.getContext('2d').putImageData(new ImageData(heatArr, w, h), 0, 0);
+}
+
+// Load a TIFF image via UTIF.js, convert to Lab, and process
+window.loadTiffFromUrl = async function loadTiffFromUrl(url) {
+  const r = await fetch(url);
+  const buf = await r.arrayBuffer();
+  const ifds = UTIF.decode(buf);
+  UTIF.decodeImage(buf, ifds[0]);
+  const w = ifds[0].width, h = ifds[0].height;
+  const raw = ifds[0].data;
+  const spp = (ifds[0]['t277'] || [3])[0];
+  const labArr = new Float32Array(w * h * 3);
+  if (spp === 4) {
+    for (let pi = 0; pi < w * h; pi++) {
+      const [L, a, b] = cmykToLab8(raw[pi*4], raw[pi*4+1], raw[pi*4+2], raw[pi*4+3]);
+      labArr[pi*3] = L; labArr[pi*3+1] = a; labArr[pi*3+2] = b;
+    }
+  } else if (spp === 3) {
+    for (let pi = 0; pi < w * h; pi++) {
+      const [L, a, b] = srgbToLab(raw[pi*3], raw[pi*3+1], raw[pi*3+2]);
+      labArr[pi*3] = L; labArr[pi*3+1] = a; labArr[pi*3+2] = b;
+    }
+  } else if (spp === 1) {
+    for (let pi = 0; pi < w * h; pi++) {
+      labArr[pi*3] = raw[pi] / 255 * 100; labArr[pi*3+1] = 0; labArr[pi*3+2] = 0;
+    }
+  }
+  _fullW = w; _fullH = h;
+  processLabImage(labArr, w, h);
+  _splitRatio = 0.5; _zoomFit = true; _panX = 0; _panY = 0;
+  renderPreview();
 }
 
 function getZoomTransform(cw, ch) {
@@ -576,50 +739,47 @@ function renderPreview() {
   if (!_printOffscreen) {
     document.getElementById('labelPrint').style.display = 'none';
     document.getElementById('labelLam').style.display = 'none';
+    document.getElementById('heatLegend').style.display = 'none';
     document.getElementById('splitLine').style.display = 'none';
     document.getElementById('navigator').style.display = 'none';
     return;
   }
 
   const t = getZoomTransform(cw, ch);
-  const { scale, iw, ih, ox, oy } = t;
 
-  const splitX = ox + _splitRatio * iw;
+  if (_viewMode === 'heatmap') {
+    // Full canvas: heatmap
+    ctx.drawImage(_heatOffscreen, t.ox, t.oy, t.iw, t.ih);
+    document.getElementById('labelPrint').style.display = 'none';
+    document.getElementById('labelLam').style.display = 'none';
+    document.getElementById('splitLine').style.display = 'none';
+    document.getElementById('heatLegend').style.display = 'block';
+  } else {
+    // Split: print | lam
+    const splitX = t.ox + _splitRatio * t.iw;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(t.ox, t.oy, Math.max(0, splitX - t.ox), t.ih);
+    ctx.clip();
+    ctx.drawImage(_printOffscreen, t.ox, t.oy, t.iw, t.ih);
+    ctx.restore();
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(splitX, t.oy, Math.max(0, (t.ox + t.iw) - splitX), t.ih);
+    ctx.clip();
+    ctx.drawImage(_lamOffscreen, t.ox, t.oy, t.iw, t.ih);
+    ctx.restore();
+    document.getElementById('labelPrint').style.display = 'block';
+    document.getElementById('labelLam').style.display = 'block';
+    const sl = document.getElementById('splitLine');
+    sl.style.display = 'block'; sl.style.left = splitX + 'px';
+    document.getElementById('heatLegend').style.display = 'none';
+  }
 
-  // Left half: print simulation
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(ox, oy, Math.max(0, splitX - ox), ih);
-  ctx.clip();
-  ctx.drawImage(_printOffscreen, ox, oy, iw, ih);
-  ctx.restore();
-
-  // Right half: laminated
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(splitX, oy, Math.max(0, (ox + iw) - splitX), ih);
-  ctx.clip();
-  ctx.drawImage(_lamOffscreen, ox, oy, iw, ih);
-  ctx.restore();
-
-  // Labels
-  document.getElementById('labelPrint').style.display = 'block';
-  document.getElementById('labelLam').style.display = 'block';
-
-  // Split line
-  const sl = document.getElementById('splitLine');
-  sl.style.display = 'block';
-  sl.style.left = splitX + 'px';
-
-  // Zoom label
   const zl = document.getElementById('zoomLabel');
-  zl.textContent = _zoomFit ? 'fit' : Math.round(scale / t.fitScale * 100) + '%';
-
-  // Update cursor for pan
-  if (_zoomFit || scale <= t.fitScale) container.style.cursor = 'default';
+  zl.textContent = _zoomFit ? 'fit' : Math.round(t.scale / t.fitScale * 100) + '%';
+  if (_zoomFit || t.scale <= t.fitScale) container.style.cursor = 'default';
   else container.style.cursor = _isDraggingCanvas ? 'grabbing' : 'grab';
-
-  // Navigator
   renderNavigator(t);
 }
 
@@ -631,30 +791,29 @@ function renderNavigator(t) {
   nc.width = nw; nc.height = nh;
   const nctx = nc.getContext('2d');
   nctx.imageSmoothingEnabled = true;
-
   const nScale = Math.min(nw / _fullW, nh / _fullH);
   const niw = _fullW * nScale, nih = _fullH * nScale;
   const nox = (nw - niw) / 2, noy = (nh - nih) / 2;
-
   nctx.fillStyle = '#444'; nctx.fillRect(0, 0, nw, nh);
 
-  const nSplitX = nox + _splitRatio * niw;
+  if (_viewMode === 'heatmap') {
+    nctx.drawImage(_heatOffscreen, nox, noy, niw, nih);
+  } else {
+    const nSplitX = nox + _splitRatio * niw;
+    nctx.save();
+    nctx.beginPath();
+    nctx.rect(nox, noy, Math.max(0, nSplitX - nox), nih);
+    nctx.clip();
+    nctx.drawImage(_printOffscreen, nox, noy, niw, nih);
+    nctx.restore();
+    nctx.save();
+    nctx.beginPath();
+    nctx.rect(nSplitX, noy, Math.max(0, (nox + niw) - nSplitX), nih);
+    nctx.clip();
+    nctx.drawImage(_lamOffscreen, nox, noy, niw, nih);
+    nctx.restore();
+  }
 
-  nctx.save();
-  nctx.beginPath();
-  nctx.rect(nox, noy, Math.max(0, nSplitX - nox), nih);
-  nctx.clip();
-  nctx.drawImage(_printOffscreen, nox, noy, niw, nih);
-  nctx.restore();
-
-  nctx.save();
-  nctx.beginPath();
-  nctx.rect(nSplitX, noy, Math.max(0, (nox + niw) - nSplitX), nih);
-  nctx.clip();
-  nctx.drawImage(_lamOffscreen, nox, noy, niw, nih);
-  nctx.restore();
-
-  // Viewport rectangle (only when zoomed in)
   const vr = document.getElementById('navViewport');
   const cw = document.getElementById('previewContainer').clientWidth;
   const ch = document.getElementById('previewContainer').clientHeight;
@@ -695,7 +854,7 @@ document.getElementById('fileImg').onchange = e => {
   if (!_clutData) { document.getElementById('previewStatus').textContent = 'Build ICC first then load image'; return; }
   const img = new Image();
   img.onload = () => loadImageToProcessor(img);
-  img.onerror = () => document.getElementById('previewStatus').textContent = 'Failed to load: ' + (f.name || 'file');
+  img.onerror = () => document.getElementById('previewStatus').textContent = 'Unsupported format. Use PNG or JPEG: ' + (f.name || 'file');
   img.src = URL.createObjectURL(f);
 };
 
@@ -704,6 +863,15 @@ function loadImageFromUrl(url) {
   if (!url) return;
   if (!_clutData) { document.getElementById('previewStatus').textContent = 'Build ICC first'; return; }
   document.getElementById('previewStatus').textContent = 'Loading...';
+  const lower = url.toLowerCase();
+  if (lower.endsWith('.tif') || lower.endsWith('.tiff')) {
+    loadTiffFromUrl(url).then(() => {
+      document.getElementById('previewStatus').textContent = `Loaded TIFF ${_fullW}×${_fullH}`;
+    }).catch(e => {
+      document.getElementById('previewStatus').textContent = 'TIFF error: ' + e.message; console.error(e);
+    });
+    return;
+  }
   const img = new Image();
   img.onload = () => loadImageToProcessor(img);
   img.onerror = () => document.getElementById('previewStatus').textContent = 'Failed to load image from server';
@@ -795,6 +963,14 @@ document.getElementById('zoom100Btn').onclick = () => {
   renderPreview();
 };
 
+// View mode toggle
+document.getElementById('viewToggleBtn').onclick = () => {
+  _viewMode = _viewMode === 'split' ? 'heatmap' : 'split';
+  document.getElementById('viewToggleBtn').textContent = _viewMode === 'heatmap' ? 'Compare' : 'Error ΔE';
+  document.getElementById('viewToggleBtn').style.background = _viewMode === 'heatmap' ? '#e0e7ff' : '#dbeafe';
+  renderPreview();
+};
+
 // Navigator click to pan
 document.getElementById('navigator').onmousedown = e => {
   const nc = document.getElementById('navCanvas');
@@ -833,20 +1009,11 @@ document.getElementById('previewCanvas').onmousemove = e => {
     info.classList.add('hidden'); return;
   }
 
-  const canvasData = canvas.getContext('2d').getImageData(mx, my, 1, 1).data;
-  const [cL, ca, cb_v] = srgbToLab(canvasData[0], canvasData[1], canvasData[2]);
-
   const cw = canvas.width, ch = canvas.height;
   const t = getZoomTransform(cw, ch);
-
-  // Native image coords of hovered pixel
   const fx = (mx - t.ox) / t.scale, fy = (my - t.oy) / t.scale;
   if (fx < 0 || fx >= _fullW || fy < 0 || fy >= _fullH) { info.classList.add('hidden'); return; }
 
-  const splitX = t.ox + _splitRatio * t.iw;
-  const isRight = mx >= splitX;
-
-  // Always show both Print and Lam with ΔE, regardless of which side
   const printCtx = _printOffscreen.getContext('2d');
   const printPd = printCtx.getImageData(Math.round(fx), Math.round(fy), 1, 1).data;
   const lamCtx = _lamOffscreen.getContext('2d');
@@ -854,11 +1021,43 @@ document.getElementById('previewCanvas').onmousemove = e => {
   const [pL, pa, pb] = srgbToLab(printPd[0], printPd[1], printPd[2]);
   const [lL, la, lb] = srgbToLab(lamPd[0], lamPd[1], lamPd[2]);
   const de = deltaE00(pL, pa, pb, lL, la, lb);
-  const warn = de > 5 ? ' <span style="color:#fbb">⚠ ΔE >5</span>' : '';
-  info.innerHTML = `<b>(${Math.round(fx)},${Math.round(fy)})</b>${warn} ${isRight ? '→ Lam' : '← Print'}
+  const deClr = de < 1 ? '#8f8' : de < 3 ? '#ff8' : '#f88';
+
+  if (_viewMode === 'heatmap') {
+    const gm1 = _clutPoints - 1;
+    const lf = (pL / 100) * gm1, af = ((pa + 128) / 255) * gm1, bf = ((pb + 128) / 255) * gm1;
+    const l0 = Math.max(0, Math.min(gm1 - 1, Math.floor(lf)));
+    const a0 = Math.max(0, Math.min(gm1 - 1, Math.floor(af)));
+    const b0 = Math.max(0, Math.min(gm1 - 1, Math.floor(bf)));
+    const l1 = l0 + 1, a1 = a0 + 1, b1 = b0 + 1;
+    const ld = lf - l0, ad_ = af - a0, bd_ = bf - b0;
+    function hv(li, ai, bi) {
+      const v = _heatmapValues[(li * _clutPoints + ai) * _clutPoints + bi];
+      return v < 0 ? 0 : v;
+    }
+    const v00 = hv(l0,a0,b0)*(1-bd_) + hv(l0,a0,b1)*bd_;
+    const v01 = hv(l0,a1,b0)*(1-bd_) + hv(l0,a1,b1)*bd_;
+    const v10 = hv(l1,a0,b0)*(1-bd_) + hv(l1,a0,b1)*bd_;
+    const v11 = hv(l1,a1,b0)*(1-bd_) + hv(l1,a1,b1)*bd_;
+    const hmDe = (v00*(1-ad_) + v01*ad_)*(1-ld) + (v10*(1-ad_) + v11*ad_)*ld;
+    const actualLab = applyCLUT([pL, pa, pb], _actualClutData, _clutPoints);
+    const predLab_ = applyCLUT([pL, pa, pb], _clutData, _clutPoints);
+    const hmClr = hmDe < 1 ? '#8f8' : hmDe < 3 ? '#ff8' : '#f88';
+    const hmStr = `<b style="color:${hmClr}">Model ΔE = ${hmDe.toFixed(2)}</b>
+Pred: Lab(${predLab_[0].toFixed(1)},${predLab_[1].toFixed(1)},${predLab_[2].toFixed(1)})
+Actual:Lab(${actualLab[0].toFixed(1)},${actualLab[1].toFixed(1)},${actualLab[2].toFixed(1)})`;
+    info.innerHTML = `<b>(${Math.round(fx)},${Math.round(fy)})</b>
+<span style="color:${deClr}">Print vs Lam: ΔE ${de.toFixed(2)}</span>
+${hmStr}`;
+  } else {
+    const splitX = t.ox + _splitRatio * t.iw;
+    const isRight = mx >= splitX;
+    const warn = de > 5 ? ' <span style="color:#fbb">⚠ ΔE >5</span>' : '';
+    info.innerHTML = `<b>(${Math.round(fx)},${Math.round(fy)})</b>${warn} ${isRight ? '→ Lam' : '← Print'}
 Print: Lab(${pL.toFixed(1)},${pa.toFixed(1)},${pb.toFixed(1)})
 Lam:   Lab(${lL.toFixed(1)},${la.toFixed(1)},${lb.toFixed(1)})
-<b>ΔE00 = ${de.toFixed(2)}</b>`;
+<b style="color:${deClr}">ΔE00 = ${de.toFixed(2)}</b>`;
+  }
   info.classList.remove('hidden');
 };
 
@@ -867,7 +1066,7 @@ document.getElementById('previewCanvas').onmouseleave = () => {
 };
 
 // ---- import helpers from app bundle ----
-import { spectralToXYZ, xyzToLab, deltaE00, ridgeFit, buildDeviceLink, allocateCLUT, labToLab8, srgbToLab, labToSrgb, applyCLUT } from '/dist/app.js';
+import { spectralToXYZ, xyzToLab, deltaE00, ridgeFit, buildDeviceLink, allocateCLUT, labToLab8, lab8ToLab, srgbToLab, labToSrgb, applyCLUT } from '/dist/app.js';
 function toLab(s) { const [X, Y, Z] = spectralToXYZ(Array.from(s)); return xyzToLab(X, Y, Z); }
 </script>
 </body>
