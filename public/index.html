@@ -454,10 +454,15 @@ document.getElementById('buildBtn').onclick = async () => {
     const gp = parseInt(document.getElementById('clutSize').value);
     const uLab = uPatches.map(p => toLab(p.spectra));
     const cl = allocateCLUT(3, 3, gp);
+    const GAMUT_THRESHOLD = 40; // ΔE — beyond this, use identity (out of printer gamut)
     for (let i = 0; i < gp; i++) for (let j = 0; j < gp; j++) for (let k = 0; k < gp; k++) {
       const Lt = 100 * i / (gp - 1), at = -128 + 255 * j / (gp - 1), bt = -128 + 255 * k / (gp - 1);
       let bD = Infinity, bI = 0; for (let pi = 0; pi < uLab.length; pi++) { const d = Math.hypot(uLab[pi][0] - Lt, uLab[pi][1] - at, uLab[pi][2] - bt); if (d < bD) { bD = d; bI = pi; } }
-      cl.setter([i, j, k], labToLab8(predLab[bI][0], predLab[bI][1], predLab[bI][2]));
+      if (bD > GAMUT_THRESHOLD) {
+        cl.setter([i, j, k], labToLab8(Lt, at, bt)); // identity for out-of-gamut
+      } else {
+        cl.setter([i, j, k], labToLab8(predLab[bI][0], predLab[bI][1], predLab[bI][2]));
+      }
     }
     iccBuf = buildDeviceLink({ inputChannels: 3, outputChannels: 3, clutPoints: gp, clutData: cl.array, description: `P95=${p95.toFixed(2)}` });
     _clutData = cl.array; _clutPoints = gp;
@@ -593,12 +598,13 @@ document.getElementById('previewCanvas').onmousemove = e => {
 
   // Processed pixel (from canvas)
   const pr = canvasData[0], pg = canvasData[1], pb = canvasData[2];
-  const isProcessed = mx >= Math.floor(canvas.width / 2);
+    const isProcessed = mx >= Math.floor(canvas.width / 2);
 
   if (isProcessed) {
     const [pL, pa, pb_val] = srgbToLab(pr, pg, pb);
     const de = deltaE00(oL, oa, ob_v, pL, pa, pb_val);
-    info.innerHTML = `<b>(${mx},${my})</b>
+    const warn = de > 30 ? ' <span style="color:#fbb">⚠ out of printer gamut</span>' : '';
+    info.innerHTML = `<b>(${mx},${my})</b>${warn}
 Orig: RGB(${or},${og},${ob}) &nbsp;Lab(${oL.toFixed(1)},${oa.toFixed(1)},${ob_v.toFixed(1)})
 Lam:  RGB(${pr},${pg},${pb}) &nbsp;Lab(${pL.toFixed(1)},${pa.toFixed(1)},${pb_val.toFixed(1)})
 <b>ΔE00 = ${de.toFixed(2)}</b>`;
