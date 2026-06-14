@@ -722,8 +722,13 @@ document.onmousemove = e => {
     _splitRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     renderPreview();
   } else if (_isDraggingCanvas) {
+    const cw = container.clientWidth, ch = container.clientHeight;
+    const t = getZoomTransform(cw, ch);
     _panX = _dragStartPanX + (e.clientX - _dragStartX);
     _panY = _dragStartPanY + (e.clientY - _dragStartY);
+    // Clamp so image doesn't slide off
+    _panX = Math.min(0, Math.max(cw - t.iw, _panX));
+    _panY = Math.min(0, Math.max(ch - t.ih, _panY));
     renderPreview();
   }
 };
@@ -757,6 +762,8 @@ container.onwheel = e => {
   const newT = getZoomTransform(cw, ch);
   _panX = cx - imgX / _fullW * newT.iw - (cw - newT.iw) / 2;
   _panY = cy - imgY / _fullH * newT.ih - (ch - newT.ih) / 2;
+  _panX = Math.min(0, Math.max(cw - newT.iw, _panX));
+  _panY = Math.min(0, Math.max(ch - newT.ih, _panY));
   renderPreview();
 };
 
@@ -765,11 +772,7 @@ document.getElementById('zoomFitBtn').onclick = () => {
   _zoomFit = true; _panX = 0; _panY = 0; renderPreview();
 };
 document.getElementById('zoom100Btn').onclick = () => {
-  const cw = container.clientWidth, ch = container.clientHeight;
-  const t = getZoomTransform(cw, ch);
-  _zoomFit = false;
-  _zoom = t.fitScale; // 100% = fitScale (CSS pixel per image pixel at fit)
-  _panX = 0; _panY = 0;
+  _zoomFit = false; _zoom = 1.0; _panX = 0; _panY = 0;
   renderPreview();
 };
 
