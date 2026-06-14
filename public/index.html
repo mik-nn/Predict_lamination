@@ -149,6 +149,8 @@
             <canvas id="previewCanvas" style="display:block;width:100%;height:100%;image-rendering:pixelated"></canvas>
             <div id="splitLine" style="position:absolute;top:0;bottom:0;width:3px;background:#fff;cursor:ew-resize;pointer-events:auto;box-shadow:0 0 4px rgba(0,0,0,.5);display:none"></div>
             <div id="colorInfo" class="absolute bottom-2 left-2 bg-black/80 text-white text-xs p-2 rounded pointer-events-none hidden font-mono leading-relaxed min-w-[280px]"></div>
+            <div id="labelPrint" class="absolute bottom-2 left-2 bg-green-700/70 text-white text-[10px] px-1.5 py-0.5 rounded pointer-events-none" style="display:none">PRINT</div>
+            <div id="labelLam" class="absolute bottom-2 right-2 bg-orange-600/70 text-white text-[10px] px-1.5 py-0.5 rounded pointer-events-none" style="display:none">LAM</div>
             <div id="navigator" class="absolute top-2 right-2 bg-black/70 border border-white/30 rounded overflow-hidden" style="width:160px;height:107px;display:none">
               <canvas id="navCanvas" style="width:100%;height:100%"></canvas>
               <div id="navViewport" style="position:absolute;border:1.5px solid #f00;pointer-events:none;display:none"></div>
@@ -582,7 +584,13 @@ function renderPreview() {
   ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = '#888'; ctx.fillRect(0, 0, cw, ch);
 
-  if (!_printOffscreen) return;
+  if (!_printOffscreen) {
+    document.getElementById('labelPrint').style.display = 'none';
+    document.getElementById('labelLam').style.display = 'none';
+    document.getElementById('splitLine').style.display = 'none';
+    document.getElementById('navigator').style.display = 'none';
+    return;
+  }
 
   const t = getZoomTransform(cw, ch);
   const { scale, iw, ih, ox, oy } = t;
@@ -604,6 +612,10 @@ function renderPreview() {
   ctx.clip();
   ctx.drawImage(_lamOffscreen, ox, oy, iw, ih);
   ctx.restore();
+
+  // Labels
+  document.getElementById('labelPrint').style.display = 'block';
+  document.getElementById('labelLam').style.display = 'block';
 
   // Split line
   const sl = document.getElementById('splitLine');
@@ -832,21 +844,19 @@ document.getElementById('previewCanvas').onmousemove = e => {
   const splitX = t.ox + _splitRatio * t.iw;
   const isRight = mx >= splitX;
 
-  if (isRight) {
-    const printCtx = _printOffscreen.getContext('2d');
-    const printPd = printCtx.getImageData(Math.round(fx), Math.round(fy), 1, 1).data;
-    const [pL, pa, pb] = srgbToLab(printPd[0], printPd[1], printPd[2]);
-    const de = deltaE00(pL, pa, pb, cL, ca, cb_v);
-    const warn = de > 5 ? ' <span style="color:#fbb">⚠ lamination effect >5 ΔE</span>' : '';
-    info.innerHTML = `<b>(${Math.round(fx)},${Math.round(fy)})</b>${warn}
-Print:   Lab(${pL.toFixed(1)},${pa.toFixed(1)},${pb.toFixed(1)})
-Lam:     Lab(${cL.toFixed(1)},${ca.toFixed(1)},${cb_v.toFixed(1)})
+  // Always show both Print and Lam with ΔE, regardless of which side
+  const printCtx = _printOffscreen.getContext('2d');
+  const printPd = printCtx.getImageData(Math.round(fx), Math.round(fy), 1, 1).data;
+  const lamCtx = _lamOffscreen.getContext('2d');
+  const lamPd = lamCtx.getImageData(Math.round(fx), Math.round(fy), 1, 1).data;
+  const [pL, pa, pb] = srgbToLab(printPd[0], printPd[1], printPd[2]);
+  const [lL, la, lb] = srgbToLab(lamPd[0], lamPd[1], lamPd[2]);
+  const de = deltaE00(pL, pa, pb, lL, la, lb);
+  const warn = de > 5 ? ' <span style="color:#fbb">⚠ ΔE >5</span>' : '';
+  info.innerHTML = `<b>(${Math.round(fx)},${Math.round(fy)})</b>${warn} ${isRight ? '→ Lam' : '← Print'}
+Print: Lab(${pL.toFixed(1)},${pa.toFixed(1)},${pb.toFixed(1)})
+Lam:   Lab(${lL.toFixed(1)},${la.toFixed(1)},${lb.toFixed(1)})
 <b>ΔE00 = ${de.toFixed(2)}</b>`;
-  } else {
-    info.innerHTML = `<b>(${Math.round(fx)},${Math.round(fy)})</b>
-Print:   Lab(${cL.toFixed(1)},${ca.toFixed(1)},${cb_v.toFixed(1)})
-<i>Right half = after lamination</i>`;
-  }
   info.classList.remove('hidden');
 };
 
