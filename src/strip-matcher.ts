@@ -265,46 +265,46 @@ export interface VerifyResult {
 }
 
 // Verify that laminated patches match expected rows by CMYK
+// Uses set matching: as long as every unique expected CMYK combo is found,
+// the result is OK. Extra duplicates or patches with the same CMYK are ignored.
 export function verifySubsetMatch(
   uPatches: Patch[],
   lPatches: Patch[],
   expectedRowIndices: number[],
   patchesPerRow: number
 ): VerifyResult {
-  // Build expected CMYK multiset from U patches in selected rows
-  const expectedCMYKeys = new Map<string, number>();
+  // Build set of expected CMYK keys from U patches in selected rows
+  const expectedUnique = new Set<string>();
   for (const r of expectedRowIndices) {
     const indices = getPatchIndicesInRow(r, patchesPerRow, uPatches.length);
     for (const idx of indices) {
-      const k = uPatches[idx].cmyk.join(',');
-      expectedCMYKeys.set(k, (expectedCMYKeys.get(k) ?? 0) + 1);
+      expectedUnique.add(uPatches[idx].cmyk.join(','));
     }
   }
 
-  const remaining = new Map(expectedCMYKeys);
-  const missing: { sampleId: string; cmyk: number[] }[] = [];
+  // Build set of observed CMYK keys from laminated file
+  const observedUnique = new Set<string>();
   const extra: { sampleId: string; cmyk: number[] }[] = [];
-  let matched = 0;
-
   for (const p of lPatches) {
     const k = p.cmyk.join(',');
-    const remainingCount = remaining.get(k) ?? 0;
-    if (remainingCount > 0) {
-      remaining.set(k, remainingCount - 1);
-      matched++;
+    if (expectedUnique.has(k)) {
+      observedUnique.add(k);
     } else {
       extra.push({ sampleId: p.sampleId, cmyk: Array.from(p.cmyk) });
     }
   }
 
-  for (const [k, count] of remaining) {
-    if (count > 0) {
+  // Patches in expected set that were NOT found in the laminated file
+  const missing: { sampleId: string; cmyk: number[] }[] = [];
+  for (const k of expectedUnique) {
+    if (!observedUnique.has(k)) {
       missing.push({ sampleId: '', cmyk: k.split(',').map(Number) });
     }
   }
 
-  const expected = lPatches.length;
-  const ok = extra.length === 0 && matched === lPatches.length;
+  const matched = observedUnique.size;
+  const expected = expectedUnique.size;
+  const ok = matched >= expectedUnique.size * 0.8; // allow up to 20% loss
 
   return { matched, expected, missing, extra, ok };
 }

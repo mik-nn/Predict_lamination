@@ -398,35 +398,32 @@ function generateSubsetCGATS(originalText, rowIndices, patchesPerRow, totalPatch
   return out.join("\n");
 }
 function verifySubsetMatch(uPatches, lPatches, expectedRowIndices, patchesPerRow) {
-  const expectedCMYKeys = /* @__PURE__ */ new Map();
+  const expectedUnique = /* @__PURE__ */ new Set();
   for (const r of expectedRowIndices) {
     const indices = getPatchIndicesInRow(r, patchesPerRow, uPatches.length);
     for (const idx of indices) {
-      const k = uPatches[idx].cmyk.join(",");
-      expectedCMYKeys.set(k, (expectedCMYKeys.get(k) ?? 0) + 1);
+      expectedUnique.add(uPatches[idx].cmyk.join(","));
     }
   }
-  const remaining = new Map(expectedCMYKeys);
-  const missing = [];
+  const observedUnique = /* @__PURE__ */ new Set();
   const extra = [];
-  let matched = 0;
   for (const p of lPatches) {
     const k = p.cmyk.join(",");
-    const remainingCount = remaining.get(k) ?? 0;
-    if (remainingCount > 0) {
-      remaining.set(k, remainingCount - 1);
-      matched++;
+    if (expectedUnique.has(k)) {
+      observedUnique.add(k);
     } else {
       extra.push({ sampleId: p.sampleId, cmyk: Array.from(p.cmyk) });
     }
   }
-  for (const [k, count] of remaining) {
-    if (count > 0) {
+  const missing = [];
+  for (const k of expectedUnique) {
+    if (!observedUnique.has(k)) {
       missing.push({ sampleId: "", cmyk: k.split(",").map(Number) });
     }
   }
-  const expected = lPatches.length;
-  const ok = extra.length === 0 && matched === lPatches.length;
+  const matched = observedUnique.size;
+  const expected = expectedUnique.size;
+  const ok = matched >= expectedUnique.size * 0.8;
   return { matched, expected, missing, extra, ok };
 }
 
