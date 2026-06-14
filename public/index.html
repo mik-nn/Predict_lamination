@@ -146,7 +146,7 @@
             <canvas id="previewCanvas" class="w-full" style="max-height:500px;image-rendering:pixelated"></canvas>
             <div id="colorInfo" class="absolute bottom-2 left-2 bg-black/80 text-white text-xs p-2 rounded pointer-events-none hidden font-mono leading-relaxed min-w-[280px]"></div>
           </div>
-          <p class="text-xs text-gray-400 mt-1">← Original &nbsp;|&nbsp; Laminated → &nbsp;· Hover for color values</p>
+          <p class="text-xs text-gray-400 mt-1">← Print (unlaminated simulation) &nbsp;|&nbsp; Laminated → &nbsp;· Hover for Lab values</p>
         </div>
 
         <button id="dlBtn" class="px-6 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700">Download .icc</button>
@@ -167,7 +167,7 @@ let selectedRows = [];
 let subsetText = null;
 let lPatches = null;
 let iccBuf = null;
-let _clutData = null, _clutPoints = 17;
+let _clutData = null, _printClutData = null, _clutPoints = 17;
 let _previewOrigData = null;
 
 // ---- step navigation ----
@@ -489,19 +489,27 @@ document.getElementById('buildBtn').onclick = async () => {
     pt.textContent = 'Building ICC profile...'; pb.style.width = '85%';
     const gp = parseInt(document.getElementById('clutSize').value);
     const uLab = uPatches.map(p => toLab(p.spectra));
+    uPatches[0].cmyk; // unused, we use uLab for gamut
     const cl = allocateCLUT(3, 3, gp);
-    const GAMUT_THRESHOLD = 40; // ΔE — beyond this, use identity (out of printer gamut)
+    const printCl = allocateCLUT(3, 3, gp);
+    const GAMUT_THRESHOLD = 40;
     for (let i = 0; i < gp; i++) for (let j = 0; j < gp; j++) for (let k = 0; k < gp; k++) {
       const Lt = 100 * i / (gp - 1), at = -128 + 255 * j / (gp - 1), bt = -128 + 255 * k / (gp - 1);
       let bD = Infinity, bI = 0; for (let pi = 0; pi < uLab.length; pi++) { const d = Math.hypot(uLab[pi][0] - Lt, uLab[pi][1] - at, uLab[pi][2] - bt); if (d < bD) { bD = d; bI = pi; } }
       if (bD > GAMUT_THRESHOLD) {
-        cl.setter([i, j, k], labToLab8(Lt, at, bt)); // identity for out-of-gamut
+        // Out of printer gamut → identity (no simulation)
+        printCl.setter([i, j, k], labToLab8(Lt, at, bt));
+        cl.setter([i, j, k], labToLab8(Lt, at, bt));
       } else {
+        // Print simulation: nearest unlaminated patch Lab
+        const [pL, pa, pb_v] = toLab(uPatches[bI].spectra);
+        printCl.setter([i, j, k], labToLab8(pL, pa, pb_v));
+        // Laminated: predicted Lab after DeviceLink
         cl.setter([i, j, k], labToLab8(predLab[bI][0], predLab[bI][1], predLab[bI][2]));
       }
     }
     iccBuf = buildDeviceLink({ inputChannels: 3, outputChannels: 3, clutPoints: gp, clutData: cl.array, description: `P95=${p95.toFixed(2)}` });
-    _clutData = cl.array; _clutPoints = gp;
+    _clutData = cl.array; _printClutData = printCl.array; _clutPoints = gp;
 
     pb.style.width = '100%'; pt.textContent = 'Done!';
     document.getElementById('statP').textContent = uPatches.length;
@@ -519,7 +527,7 @@ document.getElementById('dlBtn').onclick = () => {
 };
 
 // ---- Preview: image processing ----
-function processRightHalf() {
+function processBothHalves() {
   const canvas = document.getElementById('previewCanvas');
   const status = document.getElementById('previewStatus');
   const ctx = canvas.getContext('2d');
@@ -528,24 +536,32 @@ function processRightHalf() {
 
   const imageData = ctx.getImageData(0, 0, w, h);
   const data = imageData.data;
-  if (!_previewOrigData) _previewOrigData = new Uint8ClampedArray(data);
+  _previewOrigData = new Uint8ClampedArray(data);
 
   const mid = Math.floor(w / 2);
   status.textContent = 'Processing...';
 
   const t0 = performance.now();
   for (let y = 0; y < h; y++) {
-    for (let x = mid; x < w; x++) {
+    for (let x = 0; x < w; x++) {
       const idx = (y * w + x) * 4;
       const [L, av, bv] = srgbToLab(data[idx], data[idx+1], data[idx+2]);
-      const [L2, a2, b2_v] = applyCLUT([L, av, bv], _clutData, _clutPoints);
-      const [r2, g2, b2] = labToSrgb(L2, a2, b2_v);
-      data[idx] = r2; data[idx+1] = g2; data[idx+2] = b2;
+      if (x < mid) {
+        // LEFT: print simulation — map through printer gamut
+        const [Lp, ap, bp] = applyCLUT([L, av, bv], _printClutData, _clutPoints);
+        const [r, g, b] = labToSrgb(Lp, ap, bp);
+        data[idx] = r; data[idx+1] = g; data[idx+2] = b;
+      } else {
+        // RIGHT: lamination simulation — map through DeviceLink
+        const [Ld, ad, bd] = applyCLUT([L, av, bv], _clutData, _clutPoints);
+        const [r, g, b] = labToSrgb(Ld, ad, bd);
+        data[idx] = r; data[idx+1] = g; data[idx+2] = b;
+      }
     }
   }
   ctx.putImageData(imageData, 0, 0);
   const ms = (performance.now() - t0).toFixed(0);
-  status.textContent = `Processed ${w}×${h} in ${ms}ms (right half only)`;
+  status.textContent = `Processed ${w}×${h} in ${ms}ms`;
 }
 
 async function loadImageToCanvas(img) {
@@ -556,8 +572,7 @@ async function loadImageToCanvas(img) {
   canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext('2d');
   ctx.drawImage(img, 0, 0, w, h);
-  _previewOrigData = ctx.getImageData(0, 0, w, h).data;
-  processRightHalf();
+  processBothHalves();
 }
 
 // Generate test pattern (color ramps + gray steps + color patches)
@@ -595,8 +610,7 @@ function generateTestPattern() {
     ctx.fillRect(i * sq, H - 50, sq - 1, 49);
   }
 
-  _previewOrigData = ctx.getImageData(0, 0, W, H).data;
-  processRightHalf();
+  processBothHalves();
 }
 
 // Load image file
@@ -628,26 +642,30 @@ document.getElementById('previewCanvas').onmousemove = e => {
   const idx = (my * canvas.width + mx) * 4;
   const canvasData = canvas.getContext('2d').getImageData(mx, my, 1, 1).data;
 
-  // Original pixel (from cache)
-  const or = _previewOrigData[idx], og = _previewOrigData[idx+1], ob = _previewOrigData[idx+2];
-  const [oL, oa, ob_v] = srgbToLab(or, og, ob);
+  // Both halves go through printer gamut; compute print Lab for reference
+  const origR = _previewOrigData[idx], origG = _previewOrigData[idx+1], origB = _previewOrigData[idx+2];
+  const [oL, oa, ob_v] = srgbToLab(origR, origG, origB);
+  // Print simulation Lab (left half processing)
+  const [printL, printA, printB] = applyCLUT([oL, oa, ob_v], _printClutData, _clutPoints);
 
-  // Processed pixel (from canvas)
-  const pr = canvasData[0], pg = canvasData[1], pb = canvasData[2];
-    const isProcessed = mx >= Math.floor(canvas.width / 2);
+  // Current pixel from canvas
+  const cr = canvasData[0], cg = canvasData[1], cb = canvasData[2];
+  const [cL, ca, cb_v] = srgbToLab(cr, cg, cb);
+  const isRight = mx >= Math.floor(canvas.width / 2);
 
-  if (isProcessed) {
-    const [pL, pa, pb_val] = srgbToLab(pr, pg, pb);
-    const de = deltaE00(oL, oa, ob_v, pL, pa, pb_val);
-    const warn = de > 30 ? ' <span style="color:#fbb">⚠ out of printer gamut</span>' : '';
+  if (isRight) {
+    // Right half: DeviceLink result
+    const de = deltaE00(printL, printA, printB, cL, ca, cb_v);
+    const warn = de > 5 ? ' <span style="color:#fbb">⚠ lamination effect >5 ΔE</span>' : '';
     info.innerHTML = `<b>(${mx},${my})</b>${warn}
-Orig: RGB(${or},${og},${ob}) &nbsp;Lab(${oL.toFixed(1)},${oa.toFixed(1)},${ob_v.toFixed(1)})
-Lam:  RGB(${pr},${pg},${pb}) &nbsp;Lab(${pL.toFixed(1)},${pa.toFixed(1)},${pb_val.toFixed(1)})
+Print:   Lab(${printL.toFixed(1)},${printA.toFixed(1)},${printB.toFixed(1)})
+Lam:     Lab(${cL.toFixed(1)},${ca.toFixed(1)},${cb_v.toFixed(1)})
 <b>ΔE00 = ${de.toFixed(2)}</b>`;
   } else {
+    // Left half: print simulation
     info.innerHTML = `<b>(${mx},${my})</b>
-Orig: RGB(${or},${og},${ob}) &nbsp;Lab(${oL.toFixed(1)},${oa.toFixed(1)},${ob_v.toFixed(1)})
-<i>Move cursor to right half for lamination comparison</i>`;
+Print:   Lab(${printL.toFixed(1)},${printA.toFixed(1)},${printB.toFixed(1)})
+<i>Right half = after lamination</i>`;
   }
   info.classList.remove('hidden');
 };
