@@ -692,27 +692,21 @@ async function loadImageToProcessor(img) {
 document.getElementById('fileImg').onchange = e => {
   const f = e.target.files[0];
   if (!f) return;
-  if (!_clutData) {
-    document.getElementById('previewStatus').textContent = 'Build ICC first then load image';
-    return;
-  }
+  if (!_clutData) { document.getElementById('previewStatus').textContent = 'Build ICC first then load image'; return; }
   const img = new Image();
   img.onload = () => loadImageToProcessor(img);
+  img.onerror = () => document.getElementById('previewStatus').textContent = 'Failed to load: ' + (f.name || 'file');
   img.src = URL.createObjectURL(f);
 };
 
-// Also handle dropdown load when no ICC yet
+// Load from URL (dropdown select or auto-load)
 function loadImageFromUrl(url) {
   if (!url) return;
-  if (!_clutData) {
-    document.getElementById('previewStatus').textContent = 'Build ICC first';
-    return;
-  }
+  if (!_clutData) { document.getElementById('previewStatus').textContent = 'Build ICC first'; return; }
   document.getElementById('previewStatus').textContent = 'Loading...';
   const img = new Image();
-  img.crossOrigin = 'anonymous';
   img.onload = () => loadImageToProcessor(img);
-  img.onerror = () => document.getElementById('previewStatus').textContent = 'Failed to load image';
+  img.onerror = () => document.getElementById('previewStatus').textContent = 'Failed to load image from server';
   img.src = url;
 }
 
