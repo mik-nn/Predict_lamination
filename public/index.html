@@ -696,6 +696,16 @@ document.getElementById('fileImg').onchange = e => {
   img.src = URL.createObjectURL(f);
 };
 
+function clampPan(cw, ch) {
+  const t = getZoomTransform(cw, ch);
+  const maxPanX = Math.max(0, (t.iw - cw) / 2);
+  const maxPanY = Math.max(0, (t.ih - ch) / 2);
+  if (maxPanX === 0) _panX = 0;
+  else _panX = Math.max(-maxPanX, Math.min(maxPanX, _panX));
+  if (maxPanY === 0) _panY = 0;
+  else _panY = Math.max(-maxPanY, Math.min(maxPanY, _panY));
+}
+
 // ---- Split drag + Canvas pan + Navigator drag ----
 const container = document.getElementById('previewContainer');
 const splitLine = document.getElementById('splitLine');
@@ -722,13 +732,9 @@ document.onmousemove = e => {
     _splitRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     renderPreview();
   } else if (_isDraggingCanvas) {
-    const cw = container.clientWidth, ch = container.clientHeight;
-    const t = getZoomTransform(cw, ch);
     _panX = _dragStartPanX + (e.clientX - _dragStartX);
     _panY = _dragStartPanY + (e.clientY - _dragStartY);
-    // Clamp so image doesn't slide off
-    _panX = Math.min(0, Math.max(cw - t.iw, _panX));
-    _panY = Math.min(0, Math.max(ch - t.ih, _panY));
+    clampPan(container.clientWidth, container.clientHeight);
     renderPreview();
   }
 };
@@ -762,8 +768,7 @@ container.onwheel = e => {
   const newT = getZoomTransform(cw, ch);
   _panX = cx - imgX / _fullW * newT.iw - (cw - newT.iw) / 2;
   _panY = cy - imgY / _fullH * newT.ih - (ch - newT.ih) / 2;
-  _panX = Math.min(0, Math.max(cw - newT.iw, _panX));
-  _panY = Math.min(0, Math.max(ch - newT.ih, _panY));
+  clampPan(cw, ch);
   renderPreview();
 };
 
@@ -798,10 +803,7 @@ document.getElementById('navigator').onmousedown = e => {
   _panX = (cw - t.iw) / 2 - imgX / _fullW * t.iw;
   _panY = (ch - t.ih) / 2 - imgY / _fullH * t.ih;
 
-  // Clamp pan
-  _panX = Math.min(0, Math.max(cw - t.iw, _panX));
-  _panY = Math.min(0, Math.max(ch - t.ih, _panY));
-
+  clampPan(cw, ch);
   renderPreview();
 };
 
