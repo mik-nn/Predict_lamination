@@ -132,21 +132,29 @@
         </div>
 
         <div id="previewArea" class="hidden mb-4 border-t pt-4">
-          <h4 class="font-medium text-gray-800 mb-3">Preview on test image</h4>
+          <h4 class="font-medium text-gray-800 mb-3">Preview</h4>
           <div class="mb-3 flex items-center gap-3 flex-wrap">
-            <span class="text-sm text-gray-600">Test image:</span>
+            <span class="text-sm text-gray-600">Image:</span>
             <select id="imgSelect" class="border rounded px-2 py-1 text-sm min-w-[160px]"></select>
-            <button id="loadImgBtn" class="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50">Load</button>
             <span class="text-xs text-gray-400">or</span>
             <input type="file" id="fileImg" accept="image/*" class="text-sm max-w-[200px]">
-            <button id="genTestBtn" class="px-3 py-1 bg-gray-200 text-sm rounded hover:bg-gray-300">Test pattern</button>
             <span id="previewStatus" class="text-xs text-gray-400"></span>
+            <span class="ml-auto flex items-center gap-1">
+              <button id="zoomFitBtn" class="px-2 py-1 bg-gray-200 text-xs rounded hover:bg-gray-300">Fit</button>
+              <button id="zoom100Btn" class="px-2 py-1 bg-gray-200 text-xs rounded hover:bg-gray-300">100%</button>
+              <span id="zoomLabel" class="text-xs text-gray-500 w-12 text-right">fit</span>
+            </span>
           </div>
-          <div class="relative border rounded overflow-hidden bg-gray-100" style="min-height:100px">
-            <canvas id="previewCanvas" class="w-full" style="max-height:500px;image-rendering:pixelated"></canvas>
+          <div id="previewContainer" class="relative border rounded overflow-hidden bg-gray-100" style="width:100%;height:520px;user-select:none">
+            <canvas id="previewCanvas" style="display:block;width:100%;height:100%;image-rendering:pixelated"></canvas>
+            <div id="splitLine" style="position:absolute;top:0;bottom:0;width:3px;background:#fff;cursor:ew-resize;pointer-events:auto;box-shadow:0 0 4px rgba(0,0,0,.5);display:none"></div>
             <div id="colorInfo" class="absolute bottom-2 left-2 bg-black/80 text-white text-xs p-2 rounded pointer-events-none hidden font-mono leading-relaxed min-w-[280px]"></div>
+            <div id="navigator" class="absolute top-2 right-2 bg-black/70 border border-white/30 rounded overflow-hidden" style="width:160px;height:107px;display:none">
+              <canvas id="navCanvas" style="width:100%;height:100%"></canvas>
+              <div id="navViewport" style="position:absolute;border:1.5px solid #f00;pointer-events:none;display:none"></div>
+            </div>
           </div>
-          <p class="text-xs text-gray-400 mt-1">← Print (unlaminated simulation) &nbsp;|&nbsp; Laminated → &nbsp;· Hover for Lab values</p>
+          <p class="text-xs text-gray-400 mt-1">Drag split line ↔ to compare · Hover for Lab values</p>
         </div>
 
         <button id="dlBtn" class="px-6 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700">Download .icc</button>
@@ -168,7 +176,13 @@ let subsetText = null;
 let lPatches = null;
 let iccBuf = null;
 let _clutData = null, _printClutData = null, _clutPoints = 17;
-let _previewOrigData = null;
+let _fullW = 0, _fullH = 0;
+let _printOffscreen = null, _lamOffscreen = null;
+let _splitRatio = 0.5;
+let _isDraggingSplit = false;
+let _isDraggingCanvas = false, _dragStartX = 0, _dragStartY = 0, _dragStartPanX = 0, _dragStartPanY = 0;
+let _zoomFit = true, _zoom = 1; // _zoom=1 when fit, else zoom factor
+let _panX = 0, _panY = 0;
 
 // ---- step navigation ----
 function goToStep(n) {
@@ -383,6 +397,17 @@ async function init() {
 }
 init();
 
+// ---- load image from url ----
+function loadImageFromUrl(url) {
+  if (!url) return;
+  document.getElementById('previewStatus').textContent = 'Loading...';
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => loadImageToProcessor(img);
+  img.onerror = () => document.getElementById('previewStatus').textContent = 'Failed to load image';
+  img.src = url;
+}
+
 // ---- load image list from server ----
 async function loadImageList() {
   try {
@@ -400,21 +425,10 @@ async function loadImageList() {
       opt.textContent = img.name;
       sel.appendChild(opt);
     }
+    sel.onchange = () => { loadImageFromUrl(sel.value); };
   } catch (e) { console.warn('Image list not available:', e.message); }
 }
 loadImageList();
-
-document.getElementById('loadImgBtn').onclick = () => {
-  if (!_clutData) { document.getElementById('previewStatus').textContent = 'Build ICC first!'; return; }
-  const sel = document.getElementById('imgSelect');
-  const url = sel.value;
-  if (!url || url === '#') return;
-  document.getElementById('previewStatus').textContent = 'Loading...';
-  const img = new Image();
-  img.onload = () => loadImageToCanvas(img);
-  img.onerror = () => document.getElementById('previewStatus').textContent = 'Failed to load image';
-  img.src = url;
-};
 
 // ---- build ICC (step 3) ----
 document.getElementById('buildBtn').onclick = async () => {
@@ -518,6 +532,8 @@ document.getElementById('buildBtn').onclick = async () => {
     document.getElementById('statP95').textContent = `ΔE ${p95.toFixed(2)}`;
     document.getElementById('previewArea').classList.remove('hidden');
     ra.classList.remove('hidden');
+    const sel = document.getElementById('imgSelect');
+    if (sel.value && !_printOffscreen) loadImageFromUrl(sel.value);
     setTimeout(() => { pa.classList.add('hidden'); btn.disabled = false; }, 500);
   } catch (e) { pt.textContent = 'Error: ' + e.message; pt.classList.add('text-red-600'); btn.disabled = false; console.error(e); }
 };
@@ -527,144 +543,303 @@ document.getElementById('dlBtn').onclick = () => {
 };
 
 // ---- Preview: image processing ----
-function processBothHalves() {
-  const canvas = document.getElementById('previewCanvas');
-  const status = document.getElementById('previewStatus');
-  const ctx = canvas.getContext('2d');
-  const w = canvas.width, h = canvas.height;
-  if (w === 0 || h === 0) return;
-
-  const imageData = ctx.getImageData(0, 0, w, h);
-  const data = imageData.data;
-  _previewOrigData = new Uint8ClampedArray(data);
-
-  const mid = Math.floor(w / 2);
-  status.textContent = 'Processing...';
-
+function processFullImage(imgData) {
+  const w = imgData.width, h = imgData.height;
+  const src = imgData.data;
+  const printArr = new Uint8ClampedArray(src.length);
+  const lamArr = new Uint8ClampedArray(src.length);
   const t0 = performance.now();
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const idx = (y * w + x) * 4;
-      const [L, av, bv] = srgbToLab(data[idx], data[idx+1], data[idx+2]);
-      if (x < mid) {
-        // LEFT: print simulation — map through printer gamut
-        const [Lp, ap, bp] = applyCLUT([L, av, bv], _printClutData, _clutPoints);
-        const [r, g, b] = labToSrgb(Lp, ap, bp);
-        data[idx] = r; data[idx+1] = g; data[idx+2] = b;
-      } else {
-        // RIGHT: lamination simulation — map through DeviceLink
-        const [Ld, ad, bd] = applyCLUT([L, av, bv], _clutData, _clutPoints);
-        const [r, g, b] = labToSrgb(Ld, ad, bd);
-        data[idx] = r; data[idx+1] = g; data[idx+2] = b;
-      }
-    }
+  for (let i = 0; i < src.length; i += 4) {
+    const [L, a, b] = srgbToLab(src[i], src[i+1], src[i+2]);
+    const [Lp, ap, bp] = applyCLUT([L, a, b], _printClutData, _clutPoints);
+    const [rp, gp, bp2] = labToSrgb(Lp, ap, bp);
+    printArr[i] = rp; printArr[i+1] = gp; printArr[i+2] = bp2; printArr[i+3] = 255;
+    const [Ld, ad, bd] = applyCLUT([L, a, b], _clutData, _clutPoints);
+    const [rd, gd, bd2] = labToSrgb(Ld, ad, bd);
+    lamArr[i] = rd; lamArr[i+1] = gd; lamArr[i+2] = bd2; lamArr[i+3] = 255;
   }
-  ctx.putImageData(imageData, 0, 0);
-  const ms = (performance.now() - t0).toFixed(0);
-  status.textContent = `Processed ${w}×${h} in ${ms}ms`;
+  _printOffscreen = new OffscreenCanvas(w, h);
+  _printOffscreen.getContext('2d').putImageData(new ImageData(printArr, w, h), 0, 0);
+  _lamOffscreen = new OffscreenCanvas(w, h);
+  _lamOffscreen.getContext('2d').putImageData(new ImageData(lamArr, w, h), 0, 0);
+  return performance.now() - t0;
 }
 
-async function loadImageToCanvas(img) {
+function getZoomTransform(cw, ch) {
+  const fitScale = Math.min(cw / _fullW, ch / _fullH);
+  const scale = _zoomFit ? fitScale : _zoom;
+  const iw = _fullW * scale, ih = _fullH * scale;
+  const ox = (cw - iw) / 2 + _panX, oy = (ch - ih) / 2 + _panY;
+  return { scale, iw, ih, ox, oy, fitScale };
+}
+
+function renderPreview() {
+  const container = document.getElementById('previewContainer');
   const canvas = document.getElementById('previewCanvas');
-  const MAX_W = 800;
-  const w = Math.min(img.naturalWidth, MAX_W);
-  const h = Math.round(img.naturalHeight * (w / img.naturalWidth));
-  canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext('2d');
-  ctx.drawImage(img, 0, 0, w, h);
-  processBothHalves();
+  const cw = container.clientWidth, ch = container.clientHeight;
+  canvas.width = cw; canvas.height = ch;
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#888'; ctx.fillRect(0, 0, cw, ch);
+
+  if (!_printOffscreen) return;
+
+  const t = getZoomTransform(cw, ch);
+  const { scale, iw, ih, ox, oy } = t;
+
+  const splitX = ox + _splitRatio * iw;
+
+  // Left half: print simulation
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(ox, oy, Math.max(0, splitX - ox), ih);
+  ctx.clip();
+  ctx.drawImage(_printOffscreen, ox, oy, iw, ih);
+  ctx.restore();
+
+  // Right half: laminated
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(splitX, oy, Math.max(0, (ox + iw) - splitX), ih);
+  ctx.clip();
+  ctx.drawImage(_lamOffscreen, ox, oy, iw, ih);
+  ctx.restore();
+
+  // Split line
+  const sl = document.getElementById('splitLine');
+  sl.style.display = 'block';
+  sl.style.left = splitX + 'px';
+
+  // Zoom label
+  const zl = document.getElementById('zoomLabel');
+  zl.textContent = _zoomFit ? 'fit' : Math.round(scale / t.fitScale * 100) + '%';
+
+  // Update cursor for pan
+  if (_zoomFit || scale <= t.fitScale) container.style.cursor = 'default';
+  else container.style.cursor = _isDraggingCanvas ? 'grabbing' : 'grab';
+
+  // Navigator
+  renderNavigator(t);
 }
 
-// Generate test pattern (color ramps + gray steps + color patches)
-function generateTestPattern() {
-  if (!_clutData) { document.getElementById('previewStatus').textContent = 'Build ICC first!'; return; }
-  const canvas = document.getElementById('previewCanvas');
-  const W = 800, H = 300;
-  canvas.width = W; canvas.height = H;
-  const ctx = canvas.getContext('2d');
+function renderNavigator(t) {
+  const nav = document.getElementById('navigator');
+  nav.style.display = 'block';
+  const nc = document.getElementById('navCanvas');
+  const nw = nc.clientWidth, nh = nc.clientHeight;
+  nc.width = nw; nc.height = nh;
+  const nctx = nc.getContext('2d');
+  nctx.imageSmoothingEnabled = true;
 
-  // Gray gradient background
-  const grad = ctx.createLinearGradient(0, 0, W, 0);
-  grad.addColorStop(0, '#000'); grad.addColorStop(1, '#fff');
-  ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
+  const nScale = Math.min(nw / _fullW, nh / _fullH);
+  const niw = _fullW * nScale, nih = _fullH * nScale;
+  const nox = (nw - niw) / 2, noy = (nh - nih) / 2;
 
-  // Cyan-magenta-yellow stripes
-  const stripeW = W / 6;
-  const colors = ['#0ff','#f0f','#ff0','#f00','#0f0','#00f'];
-  for (let i = 0; i < 6; i++) {
-    ctx.fillStyle = colors[i];
-    ctx.globalAlpha = 0.5;
-    ctx.fillRect(i * stripeW, 0, stripeW, H);
+  nctx.fillStyle = '#444'; nctx.fillRect(0, 0, nw, nh);
+
+  const nSplitX = nox + _splitRatio * niw;
+
+  nctx.save();
+  nctx.beginPath();
+  nctx.rect(nox, noy, Math.max(0, nSplitX - nox), nih);
+  nctx.clip();
+  nctx.drawImage(_printOffscreen, nox, noy, niw, nih);
+  nctx.restore();
+
+  nctx.save();
+  nctx.beginPath();
+  nctx.rect(nSplitX, noy, Math.max(0, (nox + niw) - nSplitX), nih);
+  nctx.clip();
+  nctx.drawImage(_lamOffscreen, nox, noy, niw, nih);
+  nctx.restore();
+
+  // Viewport rectangle (only when zoomed in)
+  const vr = document.getElementById('navViewport');
+  const cw = document.getElementById('previewContainer').clientWidth;
+  const ch = document.getElementById('previewContainer').clientHeight;
+  if (_zoomFit || t.scale <= t.fitScale * 1.01) {
+    vr.style.display = 'none';
+  } else {
+    const vx = (-t.ox / t.iw) * niw + nox;
+    const vy = (-t.oy / t.ih) * nih + noy;
+    const vw = (cw / t.scale / _fullW) * niw;
+    const vh = (ch / t.scale / _fullH) * nih;
+    vr.style.display = 'block';
+    vr.style.left = Math.max(nox, vx) + 'px';
+    vr.style.top = Math.max(noy, vy) + 'px';
+    vr.style.width = Math.min(niw, Math.max(4, vw)) + 'px';
+    vr.style.height = Math.min(nih, Math.max(4, vh)) + 'px';
   }
-  ctx.globalAlpha = 1;
-
-  // Color checker squares at bottom
-  const checkerColors = [
-    '#ffffff','#c8c8c8','#808080','#404040','#000000',
-    '#003380','#ff6b6b','#98d8c8','#f7d84a','#9acd32',
-    '#ff8c00','#8b4513','#6a0dad','#ff69b4','#00ced1',
-  ];
-  const sq = Math.floor(W / checkerColors.length);
-  for (let i = 0; i < checkerColors.length; i++) {
-    ctx.fillStyle = checkerColors[i];
-    ctx.fillRect(i * sq, H - 50, sq - 1, 49);
-  }
-
-  processBothHalves();
 }
 
-// Load image file
+// Load and process an image
+async function loadImageToProcessor(img) {
+  if (!_clutData) return;
+  _fullW = img.naturalWidth || img.width;
+  _fullH = img.naturalHeight || img.height;
+  const tmpC = new OffscreenCanvas(_fullW, _fullH);
+  const tmpCtx = tmpC.getContext('2d');
+  tmpCtx.drawImage(img, 0, 0);
+  const imgData = tmpCtx.getImageData(0, 0, _fullW, _fullH);
+  const ms = processFullImage(imgData);
+  _splitRatio = 0.5; _zoomFit = true; _panX = 0; _panY = 0;
+  renderPreview();
+  document.getElementById('previewStatus').textContent = `Loaded ${_fullW}×${_fullH} (processed in ${ms.toFixed(0)}ms)`;
+}
+
+// Upload file
 document.getElementById('fileImg').onchange = e => {
-  if (!_clutData) { document.getElementById('previewStatus').textContent = 'Build ICC first!'; return; }
   const f = e.target.files[0];
   if (!f) return;
   const img = new Image();
-  img.onload = () => loadImageToCanvas(img);
+  img.onload = () => loadImageToProcessor(img);
   img.src = URL.createObjectURL(f);
 };
 
-document.getElementById('genTestBtn').onclick = generateTestPattern;
+// ---- Split drag + Canvas pan + Navigator drag ----
+const container = document.getElementById('previewContainer');
+const splitLine = document.getElementById('splitLine');
+
+splitLine.onmousedown = e => { _isDraggingSplit = true; e.preventDefault(); };
+
+container.onmousedown = e => {
+  if (e.target === splitLine) return;
+  const t = getZoomTransform(container.clientWidth, container.clientHeight);
+  if (!_zoomFit && t.scale > t.fitScale * 1.01) {
+    _isDraggingCanvas = true;
+    _dragStartX = e.clientX;
+    _dragStartY = e.clientY;
+    _dragStartPanX = _panX;
+    _dragStartPanY = _panY;
+    container.style.cursor = 'grabbing';
+    e.preventDefault();
+  }
+};
+
+document.onmousemove = e => {
+  if (_isDraggingSplit) {
+    const rect = container.getBoundingClientRect();
+    _splitRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    renderPreview();
+  } else if (_isDraggingCanvas) {
+    _panX = _dragStartPanX + (e.clientX - _dragStartX);
+    _panY = _dragStartPanY + (e.clientY - _dragStartY);
+    renderPreview();
+  }
+};
+
+document.onmouseup = () => {
+  _isDraggingSplit = false;
+  _isDraggingCanvas = false;
+  if (!_zoomFit) container.style.cursor = 'grab';
+};
+
+// Mouse wheel zoom
+container.onwheel = e => {
+  e.preventDefault();
+  const t = getZoomTransform(container.clientWidth, container.clientHeight);
+  const fitScale = t.fitScale;
+  if (_zoomFit) {
+    _zoomFit = false;
+    _zoom = fitScale;
+  }
+  const delta = e.deltaY > 0 ? 0.9 : 1.1;
+  _zoom = Math.max(fitScale * 0.1, Math.min(fitScale * 20, _zoom * delta));
+  // Zoom toward cursor position
+  const rect = container.getBoundingClientRect();
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+  const cw = container.clientWidth, ch = container.clientHeight;
+  // Map cursor to image coords before zoom
+  const prevT = getZoomTransform(cw, ch);
+  const imgX = (cx - prevT.ox) / prevT.iw * _fullW;
+  const imgY = (cy - prevT.oy) / prevT.ih * _fullH;
+  // After zoom, adjust pan so cursor stays on same image point
+  const newT = getZoomTransform(cw, ch);
+  _panX = cx - imgX / _fullW * newT.iw - (cw - newT.iw) / 2;
+  _panY = cy - imgY / _fullH * newT.ih - (ch - newT.ih) / 2;
+  renderPreview();
+};
+
+// Zoom buttons
+document.getElementById('zoomFitBtn').onclick = () => {
+  _zoomFit = true; _panX = 0; _panY = 0; renderPreview();
+};
+document.getElementById('zoom100Btn').onclick = () => {
+  const cw = container.clientWidth, ch = container.clientHeight;
+  const t = getZoomTransform(cw, ch);
+  _zoomFit = false;
+  _zoom = t.fitScale; // 100% = fitScale (CSS pixel per image pixel at fit)
+  _panX = 0; _panY = 0;
+  renderPreview();
+};
+
+// Navigator click to pan
+document.getElementById('navigator').onmousedown = e => {
+  const nc = document.getElementById('navCanvas');
+  const rect = nc.getBoundingClientRect();
+  const nw = nc.width, nh = nc.height;
+  const nx = e.clientX - rect.left, ny = e.clientY - rect.top;
+
+  const nScale = Math.min(nw / _fullW, nh / _fullH);
+  const niw = _fullW * nScale, nih = _fullH * nScale;
+  const nox = (nw - niw) / 2, noy = (nh - nih) / 2;
+
+  // Map navigator click to image coords
+  const imgX = (nx - nox) / nScale, imgY = (ny - noy) / nScale;
+  if (imgX < 0 || imgX >= _fullW || imgY < 0 || imgY >= _fullH) return;
+
+  const cw = container.clientWidth, ch = container.clientHeight;
+  const t = getZoomTransform(cw, ch);
+
+  // Center viewport on clicked point
+  _panX = (cw - t.iw) / 2 - imgX / _fullW * t.iw;
+  _panY = (ch - t.ih) / 2 - imgY / _fullH * t.ih;
+
+  // Clamp pan
+  _panX = Math.min(0, Math.max(cw - t.iw, _panX));
+  _panY = Math.min(0, Math.max(ch - t.ih, _panY));
+
+  renderPreview();
+};
 
 // ---- Preview: color info on hover ----
 document.getElementById('previewCanvas').onmousemove = e => {
   const canvas = document.getElementById('previewCanvas');
   const info = document.getElementById('colorInfo');
   const rect = canvas.getBoundingClientRect();
-  const sx = canvas.width / rect.width;
-  const sy = canvas.height / rect.height;
-  const mx = Math.floor((e.clientX - rect.left) * sx);
-  const my = Math.floor((e.clientY - rect.top) * sy);
+  const mx = Math.floor(e.clientX - rect.left);
+  const my = Math.floor(e.clientY - rect.top);
 
-  if (mx < 0 || mx >= canvas.width || my < 0 || my >= canvas.height || !_previewOrigData) {
+  if (mx < 0 || mx >= canvas.width || my < 0 || my >= canvas.height) {
     info.classList.add('hidden'); return;
   }
 
-  const idx = (my * canvas.width + mx) * 4;
   const canvasData = canvas.getContext('2d').getImageData(mx, my, 1, 1).data;
+  const [cL, ca, cb_v] = srgbToLab(canvasData[0], canvasData[1], canvasData[2]);
 
-  // Both halves go through printer gamut; compute print Lab for reference
-  const origR = _previewOrigData[idx], origG = _previewOrigData[idx+1], origB = _previewOrigData[idx+2];
-  const [oL, oa, ob_v] = srgbToLab(origR, origG, origB);
-  // Print simulation Lab (left half processing)
-  const [printL, printA, printB] = applyCLUT([oL, oa, ob_v], _printClutData, _clutPoints);
+  const cw = canvas.width, ch = canvas.height;
+  const t = getZoomTransform(cw, ch);
 
-  // Current pixel from canvas
-  const cr = canvasData[0], cg = canvasData[1], cb = canvasData[2];
-  const [cL, ca, cb_v] = srgbToLab(cr, cg, cb);
-  const isRight = mx >= Math.floor(canvas.width / 2);
+  // Native image coords of hovered pixel
+  const fx = (mx - t.ox) / t.scale, fy = (my - t.oy) / t.scale;
+  if (fx < 0 || fx >= _fullW || fy < 0 || fy >= _fullH) { info.classList.add('hidden'); return; }
+
+  const splitX = t.ox + _splitRatio * t.iw;
+  const isRight = mx >= splitX;
 
   if (isRight) {
-    // Right half: DeviceLink result
-    const de = deltaE00(printL, printA, printB, cL, ca, cb_v);
+    const printCtx = _printOffscreen.getContext('2d');
+    const printPd = printCtx.getImageData(Math.round(fx), Math.round(fy), 1, 1).data;
+    const [pL, pa, pb] = srgbToLab(printPd[0], printPd[1], printPd[2]);
+    const de = deltaE00(pL, pa, pb, cL, ca, cb_v);
     const warn = de > 5 ? ' <span style="color:#fbb">⚠ lamination effect >5 ΔE</span>' : '';
-    info.innerHTML = `<b>(${mx},${my})</b>${warn}
-Print:   Lab(${printL.toFixed(1)},${printA.toFixed(1)},${printB.toFixed(1)})
+    info.innerHTML = `<b>(${Math.round(fx)},${Math.round(fy)})</b>${warn}
+Print:   Lab(${pL.toFixed(1)},${pa.toFixed(1)},${pb.toFixed(1)})
 Lam:     Lab(${cL.toFixed(1)},${ca.toFixed(1)},${cb_v.toFixed(1)})
 <b>ΔE00 = ${de.toFixed(2)}</b>`;
   } else {
-    // Left half: print simulation
-    info.innerHTML = `<b>(${mx},${my})</b>
-Print:   Lab(${printL.toFixed(1)},${printA.toFixed(1)},${printB.toFixed(1)})
+    info.innerHTML = `<b>(${Math.round(fx)},${Math.round(fy)})</b>
+Print:   Lab(${cL.toFixed(1)},${ca.toFixed(1)},${cb_v.toFixed(1)})
 <i>Right half = after lamination</i>`;
   }
   info.classList.remove('hidden');
