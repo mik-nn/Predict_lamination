@@ -138,7 +138,7 @@
             <span class="text-sm text-gray-600">Image:</span>
             <select id="imgSelect" class="border rounded px-2 py-1 text-sm min-w-[160px]"></select>
             <span class="text-xs text-gray-400">or</span>
-            <input type="file" id="fileImg" accept="image/png,image/jpeg,image/gif,image/webp" class="text-sm max-w-[200px]">
+            <input type="file" id="fileImg" accept="image/png,image/jpeg,image/gif,image/webp,image/tiff,.tif,.tiff" class="text-sm max-w-[200px]">
             <span id="previewStatus" class="text-xs text-gray-400"></span>
             <span class="ml-auto flex items-center gap-1">
               <button id="viewToggleBtn" class="px-2 py-1 text-xs rounded border font-medium" style="background:#e0e7ff;border-color:#818cf8;color:#3730a3">Error ΔE</button>
@@ -197,6 +197,7 @@ let _isDraggingCanvas = false, _dragStartX = 0, _dragStartY = 0, _dragStartPanX 
 let _zoomFit = true, _zoom = 1;
 let _panX = 0, _panY = 0;
 let _viewMode = 'split'; // 'split' | 'heatmap'
+let _gamutMask = null; // 1=in-gamut, 0=out-of-gamut, same size as _heatmapValues
 
 // ---- step navigation ----
 function goToStep(n) {
@@ -520,7 +521,7 @@ document.getElementById('buildBtn').onclick = async () => {
       // Find nearest laminated patch (for actual CLUT)
       let lD = Infinity, lI = 0; for (let pi = 0; pi < lLab.length; pi++) { const d = Math.hypot(lLab[pi][0] - Lt, lLab[pi][1] - at, lLab[pi][2] - bt); if (d < lD) { lD = d; lI = pi; } }
       const idx = (i * gp + j) * gp + k;
-      if (bD > GAMUT_THRESHOLD || lD > GAMUT_THRESHOLD) {
+      if (bD > GAMUT_THRESHOLD) {
         printCl.setter([i, j, k], labToLab8(Lt, at, bt));
         cl.setter([i, j, k], labToLab8(Lt, at, bt));
         actualCl.setter([i, j, k], labToLab8(Lt, at, bt));
@@ -530,13 +531,17 @@ document.getElementById('buildBtn').onclick = async () => {
         printCl.setter([i, j, k], labToLab8(pL, pa, pb_v));
         const predLam = labToLab8(predLab[bI][0], predLab[bI][1], predLab[bI][2]);
         cl.setter([i, j, k], predLam);
-        const actualLam = labToLab8(lLab[lI][0], lLab[lI][1], lLab[lI][2]);
+        const actualLam = lD <= GAMUT_THRESHOLD ? labToLab8(lLab[lI][0], lLab[lI][1], lLab[lI][2]) : labToLab8(Lt, at, bt);
         actualCl.setter([i, j, k], actualLam);
         const [predL, predA, predB] = lab8ToLab(predLam[0], predLam[1], predLam[2]);
         const [actL, actA, actB] = lab8ToLab(actualLam[0], actualLam[1], actualLam[2]);
         hmVals[idx] = deltaE00(predL, predA, predB, actL, actA, actB);
       }
     }
+    // Build gamut mask: 1 = in-gamut, 0 = out-of-gamut
+    const gMask = new Float32Array(hmVals.length);
+    for (let idx = 0; idx < hmVals.length; idx++) gMask[idx] = hmVals[idx] < 0 ? 0 : 1;
+    _gamutMask = gMask;
     iccBuf = buildDeviceLink({ inputChannels: 3, outputChannels: 3, clutPoints: gp, clutData: cl.array, description: `P95=${p95.toFixed(2)}` });
     _clutData = cl.array; _printClutData = printCl.array; _actualClutData = actualCl.array; _heatmapValues = hmVals; _clutPoints = gp;
 
@@ -588,23 +593,33 @@ function processFullImage(imgData) {
     const [Ld, ad, bd] = applyCLUT([L, a, b], _clutData, _clutPoints);
     const [rd, gd, bd2] = labToSrgb(Ld, ad, bd);
     lamArr[i] = rd; lamArr[i+1] = gd; lamArr[i+2] = bd2; lamArr[i+3] = 255;
-    // Heatmap: trilinear interpolation of grid ΔE values
+    // Heatmap: trilinear interpolation of grid ΔE values + gamut mask
     const lf = (L / 100) * gm1, af = ((a + 128) / 255) * gm1, bf = ((b + 128) / 255) * gm1;
     const l0 = Math.max(0, Math.min(gm1 - 1, Math.floor(lf)));
     const a0 = Math.max(0, Math.min(gm1 - 1, Math.floor(af)));
     const b0 = Math.max(0, Math.min(gm1 - 1, Math.floor(bf)));
     const l1 = l0 + 1, a1 = a0 + 1, b1 = b0 + 1;
     const ld = lf - l0, ad_ = af - a0, bd_ = bf - b0;
-    function hv(li, ai, bi) {
-      const v = _heatmapValues[(li * _clutPoints + ai) * _clutPoints + bi];
+    const idx = (li, ai, bi) => (li * _clutPoints + ai) * _clutPoints + bi;
+    function wv(li, ai, bi) {
+      const v = _heatmapValues[idx(li,ai,bi)];
       return v < 0 ? 0 : v;
     }
-    const v00 = hv(l0,a0,b0)*(1-bd_) + hv(l0,a0,b1)*bd_;
-    const v01 = hv(l0,a1,b0)*(1-bd_) + hv(l0,a1,b1)*bd_;
-    const v10 = hv(l1,a0,b0)*(1-bd_) + hv(l1,a0,b1)*bd_;
-    const v11 = hv(l1,a1,b0)*(1-bd_) + hv(l1,a1,b1)*bd_;
+    function gv(li, ai, bi) {
+      return _gamutMask ? _gamutMask[idx(li,ai,bi)] : 1;
+    }
+    const v00 = wv(l0,a0,b0)*(1-bd_) + wv(l0,a0,b1)*bd_;
+    const v01 = wv(l0,a1,b0)*(1-bd_) + wv(l0,a1,b1)*bd_;
+    const v10 = wv(l1,a0,b0)*(1-bd_) + wv(l1,a0,b1)*bd_;
+    const v11 = wv(l1,a1,b0)*(1-bd_) + wv(l1,a1,b1)*bd_;
     const de = (v00*(1-ad_) + v01*ad_)*(1-ld) + (v10*(1-ad_) + v11*ad_)*ld;
-    const [hr, hg, hb_] = heatmapColor(de);
+    const m00 = gv(l0,a0,b0)*(1-bd_) + gv(l0,a0,b1)*bd_;
+    const m01 = gv(l0,a1,b0)*(1-bd_) + gv(l0,a1,b1)*bd_;
+    const m10 = gv(l1,a0,b0)*(1-bd_) + gv(l1,a0,b1)*bd_;
+    const m11 = gv(l1,a1,b0)*(1-bd_) + gv(l1,a1,b1)*bd_;
+    const gm = (m00*(1-ad_) + m01*ad_)*(1-ld) + (m10*(1-ad_) + m11*ad_)*ld;
+    const isOog = gm < 0.5;
+    const [hr, hg, hb_] = isOog ? [136,136,136] : heatmapColor(de);
     heatArr[i] = hr; heatArr[i+1] = hg; heatArr[i+2] = hb_; heatArr[i+3] = 255;
   }
   _printOffscreen = new OffscreenCanvas(w, h);
@@ -671,13 +686,20 @@ window.processLabImage = function processLabImage(labArr, w, h) {
     const b0 = Math.max(0, Math.min(gm1-1, Math.floor(bf)));
     const l1 = l0 + 1, a1 = a0 + 1, b1 = b0 + 1;
     const ld = lf - l0, ad_ = af - a0, bd_ = bf - b0;
-    const hv = (li, ai, bi) => { const v = _heatmapValues[(li*_clutPoints+ai)*_clutPoints+bi]; return v < 0 ? 0 : v; };
-    const v0 = hv(l0,a0,b0)*(1-bd_)+hv(l0,a0,b1)*bd_;
-    const v1 = hv(l0,a1,b0)*(1-bd_)+hv(l0,a1,b1)*bd_;
-    const v2 = hv(l1,a0,b0)*(1-bd_)+hv(l1,a0,b1)*bd_;
-    const v3 = hv(l1,a1,b0)*(1-bd_)+hv(l1,a1,b1)*bd_;
+    const idx = (li, ai, bi) => (li * _clutPoints + ai) * _clutPoints + bi;
+    function wv(li, ai, bi) { const v = _heatmapValues[idx(li,ai,bi)]; return v < 0 ? 0 : v; }
+    function gv(li, ai, bi) { return _gamutMask ? _gamutMask[idx(li,ai,bi)] : 1; }
+    const v0 = wv(l0,a0,b0)*(1-bd_)+wv(l0,a0,b1)*bd_;
+    const v1 = wv(l0,a1,b0)*(1-bd_)+wv(l0,a1,b1)*bd_;
+    const v2 = wv(l1,a0,b0)*(1-bd_)+wv(l1,a0,b1)*bd_;
+    const v3 = wv(l1,a1,b0)*(1-bd_)+wv(l1,a1,b1)*bd_;
     const de = (v0*(1-ad_)+v1*ad_)*(1-ld)+(v2*(1-ad_)+v3*ad_)*ld;
-    const [hr, hg, hb4] = heatmapColor(de);
+    const m0 = gv(l0,a0,b0)*(1-bd_)+gv(l0,a0,b1)*bd_;
+    const m1 = gv(l0,a1,b0)*(1-bd_)+gv(l0,a1,b1)*bd_;
+    const m2 = gv(l1,a0,b0)*(1-bd_)+gv(l1,a0,b1)*bd_;
+    const m3 = gv(l1,a1,b0)*(1-bd_)+gv(l1,a1,b1)*bd_;
+    const gm = (m0*(1-ad_)+m1*ad_)*(1-ld)+(m2*(1-ad_)+m3*ad_)*ld;
+    const [hr, hg, hb4] = gm < 0.5 ? [136,136,136] : heatmapColor(de);
     heatArr[i] = hr; heatArr[i+1] = hg; heatArr[i+2] = hb4; heatArr[i+3] = 255;
   }
   _printOffscreen = new OffscreenCanvas(w, h);
@@ -852,6 +874,46 @@ document.getElementById('fileImg').onchange = e => {
   const f = e.target.files[0];
   if (!f) return;
   if (!_clutData) { document.getElementById('previewStatus').textContent = 'Build ICC first then load image'; return; }
+  const name = f.name.toLowerCase();
+  if (name.endsWith('.tif') || name.endsWith('.tiff')) {
+    document.getElementById('previewStatus').textContent = 'Loading TIFF...';
+    const reader = new FileReader();
+    reader.onload = async ev => {
+      try {
+        const buf = ev.target.result;
+        const ifds = UTIF.decode(buf);
+        UTIF.decodeImage(buf, ifds[0]);
+        const w = ifds[0].width, h = ifds[0].height;
+        const raw = ifds[0].data;
+        const spp = (ifds[0]['t277'] || [3])[0];
+        const labArr = new Float32Array(w * h * 3);
+        if (spp === 4) {
+          for (let pi = 0; pi < w * h; pi++) {
+            const [L, a, b] = cmykToLab8(raw[pi*4], raw[pi*4+1], raw[pi*4+2], raw[pi*4+3]);
+            labArr[pi*3] = L; labArr[pi*3+1] = a; labArr[pi*3+2] = b;
+          }
+        } else if (spp === 3) {
+          for (let pi = 0; pi < w * h; pi++) {
+            const [L, a, b] = srgbToLab(raw[pi*3], raw[pi*3+1], raw[pi*3+2]);
+            labArr[pi*3] = L; labArr[pi*3+1] = a; labArr[pi*3+2] = b;
+          }
+        } else if (spp === 1) {
+          for (let pi = 0; pi < w * h; pi++) {
+            labArr[pi*3] = raw[pi] / 255 * 100; labArr[pi*3+1] = 0; labArr[pi*3+2] = 0;
+          }
+        }
+        _fullW = w; _fullH = h;
+        processLabImage(labArr, w, h);
+        _splitRatio = 0.5; _zoomFit = true; _panX = 0; _panY = 0;
+        renderPreview();
+        document.getElementById('previewStatus').textContent = `Loaded TIFF ${w}×${h}`;
+      } catch (err) {
+        document.getElementById('previewStatus').textContent = 'TIFF error: ' + err.message;
+      }
+    };
+    reader.readAsArrayBuffer(f);
+    return;
+  }
   const img = new Image();
   img.onload = () => loadImageToProcessor(img);
   img.onerror = () => document.getElementById('previewStatus').textContent = 'Unsupported format. Use PNG or JPEG: ' + (f.name || 'file');
@@ -1031,19 +1093,24 @@ document.getElementById('previewCanvas').onmousemove = e => {
     const b0 = Math.max(0, Math.min(gm1 - 1, Math.floor(bf)));
     const l1 = l0 + 1, a1 = a0 + 1, b1 = b0 + 1;
     const ld = lf - l0, ad_ = af - a0, bd_ = bf - b0;
-    function hv(li, ai, bi) {
-      const v = _heatmapValues[(li * _clutPoints + ai) * _clutPoints + bi];
-      return v < 0 ? 0 : v;
-    }
-    const v00 = hv(l0,a0,b0)*(1-bd_) + hv(l0,a0,b1)*bd_;
-    const v01 = hv(l0,a1,b0)*(1-bd_) + hv(l0,a1,b1)*bd_;
-    const v10 = hv(l1,a0,b0)*(1-bd_) + hv(l1,a0,b1)*bd_;
-    const v11 = hv(l1,a1,b0)*(1-bd_) + hv(l1,a1,b1)*bd_;
+    function wv(li, ai, bi) { const v = _heatmapValues[(li * _clutPoints + ai) * _clutPoints + bi]; return v < 0 ? 0 : v; }
+    function gv(li, ai, bi) { return _gamutMask ? _gamutMask[(li * _clutPoints + ai) * _clutPoints + bi] : 1; }
+    const v00 = wv(l0,a0,b0)*(1-bd_) + wv(l0,a0,b1)*bd_;
+    const v01 = wv(l0,a1,b0)*(1-bd_) + wv(l0,a1,b1)*bd_;
+    const v10 = wv(l1,a0,b0)*(1-bd_) + wv(l1,a0,b1)*bd_;
+    const v11 = wv(l1,a1,b0)*(1-bd_) + wv(l1,a1,b1)*bd_;
     const hmDe = (v00*(1-ad_) + v01*ad_)*(1-ld) + (v10*(1-ad_) + v11*ad_)*ld;
+    const m00 = gv(l0,a0,b0)*(1-bd_) + gv(l0,a0,b1)*bd_;
+    const m01 = gv(l0,a1,b0)*(1-bd_) + gv(l0,a1,b1)*bd_;
+    const m10 = gv(l1,a0,b0)*(1-bd_) + gv(l1,a0,b1)*bd_;
+    const m11 = gv(l1,a1,b0)*(1-bd_) + gv(l1,a1,b1)*bd_;
+    const gm = (m00*(1-ad_) + m01*ad_)*(1-ld) + (m10*(1-ad_) + m11*ad_)*ld;
+    const isOog = gm < 0.5;
     const actualLab = applyCLUT([pL, pa, pb], _actualClutData, _clutPoints);
     const predLab_ = applyCLUT([pL, pa, pb], _clutData, _clutPoints);
-    const hmClr = hmDe < 1 ? '#8f8' : hmDe < 3 ? '#ff8' : '#f88';
-    const hmStr = `<b style="color:${hmClr}">Model ΔE = ${hmDe.toFixed(2)}</b>
+    const oogTag = isOog ? ' <span style="color:#f88">OUT OF GAMUT</span>' : '';
+    const hmClr = isOog ? '#888' : hmDe < 1 ? '#8f8' : hmDe < 3 ? '#ff8' : '#f88';
+    const hmStr = `<b style="color:${hmClr}">Model ΔE = ${isOog ? 'N/A' : hmDe.toFixed(2)}</b>${oogTag}
 Pred: Lab(${predLab_[0].toFixed(1)},${predLab_[1].toFixed(1)},${predLab_[2].toFixed(1)})
 Actual:Lab(${actualLab[0].toFixed(1)},${actualLab[1].toFixed(1)},${actualLab[2].toFixed(1)})`;
     info.innerHTML = `<b>(${Math.round(fx)},${Math.round(fy)})</b>
